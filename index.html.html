@@ -1,0 +1,1591 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>코일 실길이·단위중량 예측 모델 검증 플랫폼</title>
+
+  <!-- Google Fonts: Noto Sans KR & Inter -->
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Noto+Sans+KR:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+
+  <!-- Tailwind CSS CDN -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          fontFamily: {
+            sans: ['"Noto Sans KR"', 'Inter', 'sans-serif'],
+          },
+          colors: {
+            tealbrand: {
+              50: '#EDF7F7',
+              100: '#D4ECEC',
+              600: '#0E7478',
+              700: '#0B5B5E',
+              800: '#084547',
+              900: '#052F31',
+            },
+            slateink: '#192D32',
+            softgreen: '#D6EFCF',
+            pagebg: '#F8FAFA',
+          },
+        },
+      },
+    };
+  </script>
+
+  <!-- Chart.js CDN -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
+
+  <!-- SheetJS (xlsx) CDN for client-side Excel parsing -->
+  <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+
+  <style>
+    body {
+      background-color: #F8FAFA;
+      color: #192D32;
+      font-family: 'Noto Sans KR', 'Inter', sans-serif;
+    }
+    /* Custom range slider styling */
+    input[type="range"] {
+      accent-color: #0B5B5E;
+    }
+    /* Smooth tab panel fade */
+    .tab-panel {
+      animation: fadeIn 0.2s ease-out;
+    }
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateY(4px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+  </style>
+</head>
+<body class="min-h-screen flex flex-col antialiased selection:bg-tealbrand-100 selection:text-tealbrand-900">
+
+  <!-- Toast Notification Container (No alert() used) -->
+  <div id="toast-container" class="fixed bottom-5 right-5 z-50 flex flex-col gap-2 max-w-sm w-full px-4 sm:px-0 pointer-events-none"></div>
+
+  <!-- Top Navigation Header -->
+  <header class="bg-white border-b border-slate-200/80 sticky top-0 z-30 shadow-xs">
+    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+      <div class="flex flex-col md:flex-row md:items-center md:justify-between py-4 gap-3">
+        <!-- Brand / Title -->
+        <div class="flex items-center gap-3">
+          <div class="w-10 h-10 rounded-xl bg-tealbrand-700 text-white flex items-center justify-center shadow-sm shrink-0">
+            <svg class="w-6 h-6" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M3 13.125C3 12.504 3.504 12 4.125 12h2.25c.621 0 1.125.504 1.125 1.125v6.75C7.5 20.496 6.996 21 6.375 21h-2.25A1.125 1.125 0 013 19.875v-6.75zM9.75 8.625c0-.621.504-1.125 1.125-1.125h2.25c.621 0 1.125.504 1.125 1.125v11.25c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 01-1.125-1.125V8.625zM16.5 4.125c0-.621.504-1.125 1.125-1.125h2.25C20.496 3 21 3.504 21 4.125v15.75c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 01-1.125-1.125V4.125z" />
+            </svg>
+          </div>
+          <div>
+            <h1 class="text-lg sm:text-xl font-extrabold tracking-tight text-slateink">
+              코일 실길이·단위중량 예측 모델 검증 플랫폼
+            </h1>
+            <p class="text-xs sm:text-sm text-slate-500 font-medium">
+              500N D12 OGD 자동보정 · SD500 D10 FB-RPM 비율보정 실시간 검증
+            </p>
+          </div>
+        </div>
+
+        <!-- Status Badge -->
+        <div class="flex items-center gap-2 self-start md:self-auto">
+          <span class="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-semibold bg-softgreen text-emerald-800 border border-emerald-200">
+            <span class="w-2 h-2 rounded-full bg-emerald-600 animate-pulse"></span>
+            검증 모델 활성화됨
+          </span>
+        </div>
+      </div>
+
+      <!-- Tab Navigation -->
+      <nav class="flex overflow-x-auto gap-1 sm:gap-2 -mb-px pb-0.5" aria-label="검증 탭 메뉴">
+        <button data-tab="overview" class="tab-btn whitespace-nowrap px-4 py-3 text-sm font-bold border-b-2 border-tealbrand-700 text-tealbrand-700 transition-colors cursor-pointer">
+          1. 종합 요약
+        </button>
+        <button data-tab="d12" class="tab-btn whitespace-nowrap px-4 py-3 text-sm font-semibold border-b-2 border-transparent text-slate-500 hover:text-slateink hover:border-slate-300 transition-colors cursor-pointer">
+          2. 500N D12 검증 (OGD)
+        </button>
+        <button data-tab="d10" class="tab-btn whitespace-nowrap px-4 py-3 text-sm font-semibold border-b-2 border-transparent text-slate-500 hover:text-slateink hover:border-slate-300 transition-colors cursor-pointer">
+          3. SD500 D10 검증 (FB-RPM)
+        </button>
+        <button data-tab="excel" class="tab-btn whitespace-nowrap px-4 py-3 text-sm font-semibold border-b-2 border-transparent text-slate-500 hover:text-slateink hover:border-slate-300 transition-colors cursor-pointer flex items-center gap-1.5">
+          <span>4. 엑셀 파일 직접 검증 (.xlsx)</span>
+          <span class="px-1.5 py-0.5 text-[10px] font-bold rounded bg-tealbrand-50 text-tealbrand-700 border border-tealbrand-100">LIVE</span>
+        </button>
+      </nav>
+    </div>
+  </header>
+
+  <!-- Main Content Area -->
+  <main class="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-6 sm:py-8">
+
+    <!-- ========================================================= -->
+    <!-- TAB 1: 종합 요약 (Overview)                                -->
+    <!-- ========================================================= -->
+    <section id="tab-overview" class="tab-panel space-y-6">
+      <!-- 4 KPI Summary Cards -->
+      <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+        <!-- KPI 1 -->
+        <div class="bg-white rounded-2xl p-5 border border-slate-200/80 shadow-xs hover:shadow-md transition-shadow">
+          <div class="flex items-center justify-between mb-2">
+            <span class="text-xs font-bold uppercase tracking-wide text-tealbrand-700 bg-tealbrand-50 px-2.5 py-1 rounded-lg">500N D12 · 최근 7코일</span>
+            <span class="text-xs font-bold text-emerald-700 bg-softgreen px-2 py-0.5 rounded-md">-58.5%</span>
+          </div>
+          <div class="mt-2 flex items-baseline gap-2">
+            <span class="text-3xl font-extrabold text-slateink">9.05m</span>
+            <span class="text-xs font-medium text-slate-400">MAE</span>
+          </div>
+          <p class="mt-2 text-xs text-slate-600 leading-relaxed">
+            IBA 기록(21.83m) 대비 12.78m 절감<br />
+            <strong class="text-emerald-700">±15m 적중률 85.7%</strong> (6/7코일)
+          </p>
+        </div>
+
+        <!-- KPI 2 -->
+        <div class="bg-white rounded-2xl p-5 border border-slate-200/80 shadow-xs hover:shadow-md transition-shadow">
+          <div class="flex items-center justify-between mb-2">
+            <span class="text-xs font-bold uppercase tracking-wide text-tealbrand-700 bg-tealbrand-50 px-2.5 py-1 rounded-lg">500N D12 · 전체 18코일</span>
+            <span class="text-xs font-bold text-emerald-700 bg-softgreen px-2 py-0.5 rounded-md">목표 달성</span>
+          </div>
+          <div class="mt-2 flex items-baseline gap-2">
+            <span class="text-3xl font-extrabold text-slateink">72.2%</span>
+            <span class="text-xs font-medium text-slate-400">현장 목표 70%</span>
+          </div>
+          <p class="mt-2 text-xs text-slate-600 leading-relaxed">
+            길이(±15m) &amp; 최저값(±0.5%p) 모두<br />
+            <strong class="text-emerald-700">13/18코일 적중</strong> (MAE 18.47m)
+          </p>
+        </div>
+
+        <!-- KPI 3 -->
+        <div class="bg-white rounded-2xl p-5 border border-slate-200/80 shadow-xs hover:shadow-md transition-shadow">
+          <div class="flex items-center justify-between mb-2">
+            <span class="text-xs font-bold uppercase tracking-wide text-amber-800 bg-amber-50 px-2.5 py-1 rounded-lg">SD500 D10 · 13코일</span>
+            <span class="text-xs font-bold text-emerald-700 bg-softgreen px-2 py-0.5 rounded-md">-58.9%</span>
+          </div>
+          <div class="mt-2 flex items-baseline gap-2">
+            <span class="text-3xl font-extrabold text-slateink">49.21m</span>
+            <span class="text-xs font-medium text-slate-400">순차검증 MAE</span>
+          </div>
+          <p class="mt-2 text-xs text-slate-600 leading-relaxed">
+            IBA 기록(119.83m) 대비 70.62m 절감<br />
+            <strong class="text-tealbrand-700">중앙값 오차 27.14m</strong> (교차 53.73m)
+          </p>
+        </div>
+
+        <!-- KPI 4 -->
+        <div class="bg-white rounded-2xl p-5 border border-slate-200/80 shadow-xs hover:shadow-md transition-shadow">
+          <div class="flex items-center justify-between mb-2">
+            <span class="text-xs font-bold uppercase tracking-wide text-amber-800 bg-amber-50 px-2.5 py-1 rounded-lg">SD500 D10 핵심 변수</span>
+            <span class="text-xs font-bold text-tealbrand-700 bg-tealbrand-50 px-2 py-0.5 rounded-md">R² = 85.2%</span>
+          </div>
+          <div class="mt-2 flex items-baseline gap-2">
+            <span class="text-3xl font-extrabold text-slateink">r = 0.923</span>
+          </div>
+          <p class="mt-2 text-xs text-slate-600 leading-relaxed">
+            피니싱 블록 기준속도(<code class="font-semibold text-slateink">FB_RPM</code>)와<br />
+            IBA 상대오차 간 강한 선형 상관성
+          </p>
+        </div>
+      </div>
+
+      <!-- Side-by-side Grouped Bar Charts -->
+      <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        <!-- Chart 1: 500N D12 MAE Comparison -->
+        <div class="bg-white rounded-2xl p-5 sm:p-6 border border-slate-200/80 shadow-xs">
+          <div class="flex items-start justify-between mb-4">
+            <div>
+              <h2 class="text-base font-bold text-slateink">500N D12 평균 절대오차(MAE) 비교</h2>
+              <p class="text-xs text-slate-500 mt-0.5">생산일 교차검증(18코일) 및 시간순 후반 검증(7코일) 기준</p>
+            </div>
+            <span class="text-xs font-semibold text-slate-400">단위: m (낮을수록 우수)</span>
+          </div>
+          <div class="relative h-72 w-full">
+            <canvas id="overviewD12Chart"></canvas>
+          </div>
+        </div>
+
+        <!-- Chart 2: SD500 D10 MAE Comparison -->
+        <div class="bg-white rounded-2xl p-5 sm:p-6 border border-slate-200/80 shadow-xs">
+          <div class="flex items-start justify-between mb-4">
+            <div>
+              <h2 class="text-base font-bold text-slateink">SD500 D10 단계별 평균 오차(MAE) 개선 추이</h2>
+              <p class="text-xs text-slate-500 mt-0.5">13코일 원본 시계열 검증 · FB-RPM 비율 보정 적용 효과</p>
+            </div>
+            <span class="text-xs font-semibold text-slate-400">단위: m (낮을수록 우수)</span>
+          </div>
+          <div class="relative h-72 w-full">
+            <canvas id="overviewD10Chart"></canvas>
+          </div>
+        </div>
+      </div>
+
+      <!-- Key Findings Summary Cards -->
+      <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+        <div class="bg-white rounded-2xl p-5 border border-slate-200/80 shadow-xs">
+          <div class="flex items-center gap-2 mb-2.5">
+            <span class="w-7 h-7 rounded-lg bg-tealbrand-700 text-white text-xs font-bold flex items-center justify-center">01</span>
+            <h3 class="text-sm font-bold text-slateink">500N D12: 온라인 후버 자동보정 (OGD)</h3>
+          </div>
+          <p class="text-xs text-slate-600 leading-relaxed mb-3">
+            보정 Ridge와 PR9 예측을 절반씩 반영한 기존 후보 모델에 온라인 후버 경사하강법(OGD)을 결합해 이상치에 흔들리지 않고 편향을 자동 추적합니다.
+          </p>
+          <div class="bg-slate-50 rounded-xl p-3 text-xs font-mono text-slateink border border-slate-200/70">
+            예측 = (1 - w) × Base + w × IBA + s
+          </div>
+        </div>
+
+        <div class="bg-white rounded-2xl p-5 border border-slate-200/80 shadow-xs">
+          <div class="flex items-center gap-2 mb-2.5">
+            <span class="w-7 h-7 rounded-lg bg-tealbrand-700 text-white text-xs font-bold flex items-center justify-center">02</span>
+            <h3 class="text-sm font-bold text-slateink">SD500 D10: FB-RPM 비율 보정</h3>
+          </div>
+          <p class="text-xs text-slate-600 leading-relaxed mb-3">
+            정상 압연 구간(<code class="font-semibold">BAR_TEMP &gt; 500℃</code>)의 피니싱 블록 RPM이 +1 rpm 변할 때마다 IBA 길이에 약 +0.324% 비례 오차가 발생함을 규명해 단일 수식으로 보정했습니다.
+          </p>
+          <div class="bg-slate-50 rounded-xl p-3 text-xs font-mono text-slateink border border-slate-200/70">
+            예측 = IBA × (3.985620 - 0.003243 × FB_RPM)
+          </div>
+        </div>
+
+        <div class="bg-white rounded-2xl p-5 border border-slate-200/80 shadow-xs">
+          <div class="flex items-center gap-2 mb-2.5">
+            <span class="w-7 h-7 rounded-lg bg-amber-600 text-white text-xs font-bold flex items-center justify-center">03</span>
+            <h3 class="text-sm font-bold text-slateink">라인별 편향(L1 vs L2) 구조 규명</h3>
+          </div>
+          <p class="text-xs text-slate-600 leading-relaxed mb-3">
+            SD500 D10 13코일 분석 결과 <strong class="text-slateink">L1(6코일)</strong>은 IBA가 실측보다 평균 <strong class="text-rose-600">-117.43m</strong> 일관 과소 기록하는 반면, <strong class="text-slateink">L2(7코일)</strong>는 평균 편향이 <strong class="text-tealbrand-700">-2.68m</strong>로 거의 0에 수렴합니다.
+          </p>
+          <div class="bg-amber-50/70 rounded-xl p-3 text-xs text-amber-900 border border-amber-200/70">
+            FB_RPM 보정 적용 시 L1/L2 라인 차이까지 동시에 해소
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ========================================================= -->
+    <!-- TAB 2: 500N D12 검증 (OGD 자동보정)                         -->
+    <!-- ========================================================= -->
+    <section id="tab-d12" class="tab-panel hidden space-y-6">
+      <!-- Verified Performance Table -->
+      <div class="bg-white rounded-2xl border border-slate-200/80 shadow-xs overflow-hidden">
+        <div class="p-5 sm:p-6 border-b border-slate-100 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+          <div>
+            <h2 class="text-base sm:text-lg font-bold text-slateink">500N D12 실길이 예측 성과 비교표</h2>
+            <p class="text-xs text-slate-500 mt-0.5">평균 절대오차(MAE) 기준 · 괄호 안은 ±15m 적중률 (현장 목표 70%)</p>
+          </div>
+          <span class="inline-flex items-center px-3 py-1 rounded-full text-xs font-bold bg-softgreen text-emerald-800 self-start sm:self-auto">
+            전 구간 현장 목표 70% 달성
+          </span>
+        </div>
+        <div class="overflow-x-auto">
+          <table class="w-full text-sm text-center border-collapse">
+            <thead>
+              <tr class="bg-tealbrand-700 text-white">
+                <th class="py-3.5 px-4 text-left font-bold">평가 대상</th>
+                <th class="py-3.5 px-4 font-bold">IBA 기록</th>
+                <th class="py-3.5 px-4 font-bold">기존 모델</th>
+                <th class="py-3.5 px-4 font-bold">개선 후보</th>
+                <th class="py-3.5 px-4 font-bold bg-tealbrand-800">자동 보정 (OGD)</th>
+              </tr>
+            </thead>
+            <tbody class="divide-y divide-slate-100">
+              <tr class="bg-white hover:bg-slate-50/60 transition-colors">
+                <td class="py-4 px-4 text-left font-bold text-slateink">생산일 교차검증 · 18코일</td>
+                <td class="py-4 px-4 text-slate-600">23.64m</td>
+                <td class="py-4 px-4 text-slate-600">20.28m</td>
+                <td class="py-4 px-4 text-slate-600">19.63m</td>
+                <td class="py-4 px-4 bg-softgreen/70 font-extrabold text-tealbrand-900">
+                  18.47m
+                  <span class="block text-xs font-bold text-emerald-700 mt-0.5">(적중률 72.2% · 13/18)</span>
+                </td>
+              </tr>
+              <tr class="bg-slate-50/40 hover:bg-slate-50/80 transition-colors">
+                <td class="py-4 px-4 text-left font-bold text-slateink">시간순 후반 검증 · 7코일</td>
+                <td class="py-4 px-4 text-slate-600">21.83m</td>
+                <td class="py-4 px-4 text-slate-600">11.80m</td>
+                <td class="py-4 px-4 text-slate-600">11.06m</td>
+                <td class="py-4 px-4 bg-softgreen/70 font-extrabold text-tealbrand-900">
+                  9.05m
+                  <span class="block text-xs font-bold text-emerald-700 mt-0.5">(적중률 85.7% · 6/7)</span>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- Hit-Rate Breakdown + Interactive OGD Simulator -->
+      <div class="grid grid-cols-1 lg:grid-cols-12 gap-6">
+        <!-- Left: Hit-Rate Chart (5 cols) -->
+        <div class="lg:col-span-5 bg-white rounded-2xl p-5 sm:p-6 border border-slate-200/80 shadow-xs flex flex-col">
+          <div class="flex flex-col gap-3 mb-4">
+            <h3 class="text-base font-bold text-slateink">허용오차 구간별 적중 분포</h3>
+            <!-- Toggle Buttons -->
+            <div class="inline-flex rounded-xl bg-slate-100 p-1 w-full">
+              <button id="btn-hit-min" onclick="switchD12HitChart('min')" class="flex-1 py-2 px-3 rounded-lg text-xs font-bold transition-all bg-white text-tealbrand-700 shadow-xs cursor-pointer">
+                최저값 (±0.5%p · 18코일)
+              </button>
+              <button id="btn-hit-len" onclick="switchD12HitChart('len')" class="flex-1 py-2 px-3 rounded-lg text-xs font-semibold transition-all text-slate-500 hover:text-slateink cursor-pointer">
+                실길이 (±15m · 후반 7코일)
+              </button>
+            </div>
+          </div>
+
+          <!-- Highlight KPI Strip -->
+          <div class="flex items-center justify-between bg-tealbrand-50/70 border border-tealbrand-100 rounded-xl px-4 py-3 mb-4">
+            <div>
+              <p id="d12-hit-subtitle" class="text-xs font-medium text-slate-600">생산일 교차검증 18코일 · 최저값 적중</p>
+              <p id="d12-hit-ratio" class="text-2xl font-extrabold text-tealbrand-700 mt-0.5">13 / 18코일</p>
+            </div>
+            <div class="text-right">
+              <span id="d12-hit-pct" class="inline-block text-xl font-extrabold text-emerald-700">72.2%</span>
+              <p class="text-[11px] font-semibold text-slate-500">현장 목표 70% 달성</p>
+            </div>
+          </div>
+
+          <div class="relative flex-1 min-h-[240px] w-full">
+            <canvas id="d12HitChart"></canvas>
+          </div>
+        </div>
+
+        <!-- Right: Interactive OGD Real-time Simulator (7 cols) -->
+        <div class="lg:col-span-7 bg-white rounded-2xl p-5 sm:p-6 border border-slate-200/80 shadow-xs">
+          <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 mb-4">
+            <div>
+              <h3 class="text-base font-bold text-slateink">OGD 실시간 예측 시뮬레이터</h3>
+              <p class="text-xs text-slate-500 mt-0.5">학습된 OGD 파라미터로 신규 코일의 예측값과 적중 여부를 즉시 검증합니다.</p>
+            </div>
+            <code class="text-xs font-semibold bg-slate-100 text-tealbrand-800 px-3 py-1.5 rounded-lg border border-slate-200">
+              예측값 = (1 - w) × Base + w × IBA + s
+            </code>
+          </div>
+
+          <!-- Mode Selector -->
+          <div class="mb-4">
+            <label class="block text-xs font-bold text-slate-600 mb-1.5">검증 모드 선택</label>
+            <select id="d12-mode" onchange="updateD12Sim()" class="w-full rounded-xl border border-slate-300 bg-white px-3.5 py-2.5 text-sm font-semibold text-slateink focus:outline-none focus:ring-2 focus:ring-tealbrand-600">
+              <option value="len7">길이 예측 · 후반 7코일 파라미터 (w=0.000, s=+2.0792, 허용 ±15m)</option>
+              <option value="len18">길이 예측 · 18코일 파라미터 (w=0.000, s=+1.4421, 허용 ±15m)</option>
+              <option value="min18">최저값 예측 · 18코일 파라미터 (w=0.389, s=+0.0843, 허용 ±0.5%p)</option>
+            </select>
+          </div>
+
+          <!-- Verified Coil Presets -->
+          <div class="mb-5">
+            <span class="block text-xs font-bold text-slate-600 mb-1.5">검증 코일 프리셋 불러오기</span>
+            <div class="flex flex-wrap gap-2">
+              <button onclick="loadD12Preset('P147453A-6A')" class="px-3 py-1.5 rounded-lg text-xs font-bold bg-tealbrand-50 text-tealbrand-700 border border-tealbrand-200 hover:bg-tealbrand-100 transition-colors cursor-pointer">
+                ★ P147453A-6A (길이·최저값)
+              </button>
+              <button onclick="loadD12Preset('P147528A-20A')" class="px-3 py-1.5 rounded-lg text-xs font-semibold bg-slate-100 text-slate-700 border border-slate-200 hover:bg-slate-200 transition-colors cursor-pointer">
+                P147528A-20A
+              </button>
+              <button onclick="loadD12Preset('P147531A-3B')" class="px-3 py-1.5 rounded-lg text-xs font-semibold bg-slate-100 text-slate-700 border border-slate-200 hover:bg-slate-200 transition-colors cursor-pointer">
+                P147531A-3B
+              </button>
+              <button onclick="loadD12Preset('P147528A-14A')" class="px-3 py-1.5 rounded-lg text-xs font-semibold bg-slate-100 text-slate-700 border border-slate-200 hover:bg-slate-200 transition-colors cursor-pointer">
+                P147528A-14A
+              </button>
+              <button onclick="loadD12Preset('P149783A-5B')" class="px-3 py-1.5 rounded-lg text-xs font-semibold bg-slate-100 text-slate-700 border border-slate-200 hover:bg-slate-200 transition-colors cursor-pointer">
+                P149783A-5B
+              </button>
+            </div>
+          </div>
+
+          <!-- Input Grid -->
+          <div class="grid grid-cols-1 sm:grid-cols-3 gap-3 mb-5">
+            <div>
+              <label for="d12-base" class="block text-xs font-bold text-slate-600 mb-1">개선 후보 (Base)</label>
+              <input id="d12-base" type="number" step="0.0001" value="4735.242246" oninput="updateD12Sim()" class="w-full rounded-xl border border-slate-300 px-3 py-2.5 text-sm font-semibold text-slateink focus:outline-none focus:ring-2 focus:ring-tealbrand-600" />
+            </div>
+            <div>
+              <label for="d12-iba" class="block text-xs font-bold text-slate-600 mb-1">IBA 원본 기록</label>
+              <input id="d12-iba" type="number" step="0.0001" value="4740.00" oninput="updateD12Sim()" class="w-full rounded-xl border border-slate-300 px-3 py-2.5 text-sm font-semibold text-slateink focus:outline-none focus:ring-2 focus:ring-tealbrand-600" />
+            </div>
+            <div>
+              <label for="d12-actual" class="block text-xs font-bold text-slate-600 mb-1">실측값 (선택 입력)</label>
+              <input id="d12-actual" type="number" step="0.0001" value="4733.33" oninput="updateD12Sim()" placeholder="미입력 시 예측만 표시" class="w-full rounded-xl border border-slate-300 px-3 py-2.5 text-sm font-semibold text-slateink focus:outline-none focus:ring-2 focus:ring-tealbrand-600" />
+            </div>
+          </div>
+
+          <!-- Live Output Panel -->
+          <div class="rounded-2xl bg-slate-50 border border-slate-200 p-4 sm:p-5">
+            <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-4 border-b border-slate-200/80">
+              <div>
+                <span class="text-xs font-bold text-slate-500">OGD 최종 예측값</span>
+                <div id="d12-out-pred" class="text-3xl font-extrabold text-tealbrand-700 mt-0.5">4737.32m</div>
+              </div>
+              <div id="d12-out-badge" class="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-sm font-extrabold bg-softgreen text-emerald-800 border border-emerald-300 self-start sm:self-auto">
+                목표범위 내 적중 (PASS)
+              </div>
+            </div>
+            <div class="grid grid-cols-2 sm:grid-cols-3 gap-3 pt-4 text-xs">
+              <div>
+                <span class="text-slate-500 font-medium">OGD 예측 오차</span>
+                <p id="d12-out-err" class="text-base font-bold text-slateink mt-0.5">+3.99m</p>
+              </div>
+              <div>
+                <span class="text-slate-500 font-medium">기존 IBA 오차</span>
+                <p id="d12-out-iba-err" class="text-base font-bold text-slate-600 mt-0.5">+6.67m</p>
+              </div>
+              <div class="col-span-2 sm:col-span-1">
+                <span class="text-slate-500 font-medium">적용 파라미터</span>
+                <p id="d12-out-params" class="text-sm font-mono font-bold text-tealbrand-700 mt-0.5">w=0.000, s=+2.0792</p>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ========================================================= -->
+    <!-- TAB 3: SD500 D10 검증 (FB-RPM 비율 보정)                    -->
+    <!-- ========================================================= -->
+    <section id="tab-d10" class="tab-panel hidden space-y-6">
+      <!-- Formula Banner -->
+      <div class="bg-tealbrand-700 text-white rounded-2xl p-5 sm:p-6 shadow-sm flex flex-col lg:flex-row lg:items-center justify-between gap-4">
+        <div>
+          <span class="inline-block text-xs font-bold uppercase tracking-wider bg-white/15 px-2.5 py-1 rounded-md mb-2">
+            SD500 D10 핵심 보정식 · 상관계수 r = 0.923
+          </span>
+          <h2 class="text-lg sm:text-xl font-extrabold font-mono tracking-tight">
+            예측길이 = IBA 길이 × (3.985620 - 0.003243 × FB_RPM)
+          </h2>
+          <p class="text-xs sm:text-sm text-tealbrand-100 mt-1">
+            피니싱 블록 기준속도(FB_RPM) +1 rpm 증가당 약 +0.324% 발생하는 IBA 비례 오차를 단일 수식으로 보정 (순차검증 MAE 119.83m → 49.21m, -58.9%)
+          </p>
+        </div>
+        <div class="flex gap-3 shrink-0">
+          <div class="bg-white/10 rounded-xl px-4 py-2.5 text-center border border-white/15">
+            <div class="text-[11px] text-tealbrand-100">순차검증 MAE</div>
+            <div class="text-xl font-extrabold">49.21m</div>
+          </div>
+          <div class="bg-white/10 rounded-xl px-4 py-2.5 text-center border border-white/15">
+            <div class="text-[11px] text-tealbrand-100">중앙값 오차</div>
+            <div class="text-xl font-extrabold">27.14m</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Interactive Simulator + Scatter Plot -->
+      <div class="grid grid-cols-1 lg:grid-cols-12 gap-6">
+        <!-- Left: FB-RPM Simulator (5 cols) -->
+        <div class="lg:col-span-5 bg-white rounded-2xl p-5 sm:p-6 border border-slate-200/80 shadow-xs space-y-4">
+          <div>
+            <h3 class="text-base font-bold text-slateink">FB-RPM 비율 보정 시뮬레이터</h3>
+            <p class="text-xs text-slate-500 mt-0.5">IBA 길이와 피니싱 블록 RPM을 조절해 보정 효과를 확인하세요.</p>
+          </div>
+
+          <!-- Input: IBA Length -->
+          <div>
+            <div class="flex justify-between text-xs font-bold text-slate-600 mb-1">
+              <label for="d10-sim-iba">IBA 길이 (m)</label>
+              <span id="d10-sim-iba-lbl" class="text-tealbrand-700 font-mono">6220.0 m</span>
+            </div>
+            <input id="d10-sim-iba" type="number" step="0.1" value="6220" oninput="updateD10Sim()" class="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm font-semibold text-slateink focus:outline-none focus:ring-2 focus:ring-tealbrand-600" />
+          </div>
+
+          <!-- Input + Slider: FB_RPM -->
+          <div>
+            <div class="flex justify-between text-xs font-bold text-slate-600 mb-1">
+              <label for="d10-sim-rpm">피니싱 블록 기준속도 (FB_RPM)</label>
+              <span id="d10-sim-rpm-lbl" class="text-tealbrand-700 font-mono">913.0 rpm</span>
+            </div>
+            <div class="flex items-center gap-3">
+              <input id="d10-sim-rpm-slider" type="range" min="890" max="950" step="0.1" value="913.0" oninput="syncD10Rpm('slider')" class="flex-1 cursor-pointer" />
+              <input id="d10-sim-rpm" type="number" min="850" max="1000" step="0.1" value="913.0" oninput="syncD10Rpm('input')" class="w-24 rounded-xl border border-slate-300 px-2.5 py-1.5 text-sm font-semibold text-slateink text-right focus:outline-none focus:ring-2 focus:ring-tealbrand-600" />
+            </div>
+            <div class="flex justify-between text-[11px] text-slate-400 mt-1">
+              <span>913 rpm (과소구간)</span>
+              <span>923.6 rpm (정상)</span>
+              <span>932 rpm (과대구간)</span>
+            </div>
+          </div>
+
+          <!-- Input: Optional Actual Length -->
+          <div>
+            <label for="d10-sim-actual" class="block text-xs font-bold text-slate-600 mb-1">실측 길이 (m · 선택 입력)</label>
+            <input id="d10-sim-actual" type="number" step="0.1" value="6309.2" oninput="updateD10Sim()" placeholder="오차 비교용 실측 길이" class="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm font-semibold text-slateink focus:outline-none focus:ring-2 focus:ring-tealbrand-600" />
+          </div>
+
+          <!-- Simulator Result Card -->
+          <div class="rounded-2xl bg-slate-50 border border-slate-200 p-4 space-y-3">
+            <div class="flex items-baseline justify-between border-b border-slate-200 pb-3">
+              <span class="text-xs font-bold text-slate-500">최종 보정 예측 길이</span>
+              <span id="d10-out-pred" class="text-2xl font-extrabold text-tealbrand-700">6373.9 m</span>
+            </div>
+            <div class="grid grid-cols-2 gap-3 text-xs">
+              <div>
+                <span class="text-slate-500">보정 계수 (Ratio)</span>
+                <p id="d10-out-ratio" class="text-sm font-mono font-bold text-slateink mt-0.5">1.024761</p>
+              </div>
+              <div>
+                <span class="text-slate-500">보정량 (Δ)</span>
+                <p id="d10-out-delta" class="text-sm font-mono font-bold text-tealbrand-700 mt-0.5">+153.9 m</p>
+              </div>
+              <div>
+                <span class="text-slate-500">기존 IBA 오차</span>
+                <p id="d10-out-iba-err" class="text-sm font-bold text-rose-600 mt-0.5">-89.2 m</p>
+              </div>
+              <div>
+                <span class="text-slate-500">보정 후 오차</span>
+                <p id="d10-out-corr-err" class="text-sm font-bold text-emerald-700 mt-0.5">+64.7 m</p>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Right: Scatter Plot (7 cols) -->
+        <div class="lg:col-span-7 bg-white rounded-2xl p-5 sm:p-6 border border-slate-200/80 shadow-xs flex flex-col">
+          <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-2 mb-3">
+            <div>
+              <h3 class="text-base font-bold text-slateink">FB_RPM vs IBA 상대오차(%) 산점도 (13코일)</h3>
+              <p class="text-xs text-slate-500 mt-0.5">913 rpm(과소) · 923.6 rpm(일치) · 932 rpm(과대) 군집과 회귀선</p>
+            </div>
+            <span class="text-xs font-bold text-tealbrand-700 bg-tealbrand-50 px-2.5 py-1 rounded-lg self-start sm:self-auto">r = 0.923</span>
+          </div>
+          <div class="relative flex-1 min-h-[300px] w-full">
+            <canvas id="d10ScatterChart"></canvas>
+          </div>
+        </div>
+      </div>
+
+      <!-- 13-Coil Full Verification Table with Line Filter -->
+      <div class="bg-white rounded-2xl border border-slate-200/80 shadow-xs overflow-hidden">
+        <div class="p-5 sm:p-6 border-b border-slate-100 flex flex-col md:flex-row md:items-center justify-between gap-4">
+          <div>
+            <h3 class="text-base font-bold text-slateink">SD500 D10 전체 13코일 순차검증 결과</h3>
+            <p class="text-xs text-slate-500 mt-0.5">라인별 필터링 시 해당 라인의 IBA 오차 및 보정 후 오차 통계가 자동 재계산됩니다.</p>
+          </div>
+          <!-- Line Filter Buttons -->
+          <div class="inline-flex rounded-xl bg-slate-100 p-1 self-start md:self-auto">
+            <button data-line="ALL" onclick="filterD10Table('ALL')" class="d10-filter-btn px-3.5 py-1.5 rounded-lg text-xs font-bold bg-white text-tealbrand-700 shadow-xs cursor-pointer">
+              전체 13코일
+            </button>
+            <button data-line="L1" onclick="filterD10Table('L1')" class="d10-filter-btn px-3.5 py-1.5 rounded-lg text-xs font-semibold text-slate-600 hover:text-slateink cursor-pointer">
+              L1 (6코일)
+            </button>
+            <button data-line="L2" onclick="filterD10Table('L2')" class="d10-filter-btn px-3.5 py-1.5 rounded-lg text-xs font-semibold text-slate-600 hover:text-slateink cursor-pointer">
+              L2 (7코일)
+            </button>
+          </div>
+        </div>
+
+        <!-- Dynamic Filter Summary Strip -->
+        <div class="grid grid-cols-2 sm:grid-cols-4 gap-3 bg-slate-50/80 px-5 py-3 border-b border-slate-100 text-xs">
+          <div>
+            <span class="text-slate-500">선택 코일 수</span>
+            <p id="d10-stat-count" class="text-sm font-extrabold text-slateink">13코일</p>
+          </div>
+          <div>
+            <span class="text-slate-500">IBA 원본 MAE</span>
+            <p id="d10-stat-iba-mae" class="text-sm font-extrabold text-rose-600">119.83m</p>
+          </div>
+          <div>
+            <span class="text-slate-500">FB-RPM 순차보정 MAE</span>
+            <p id="d10-stat-corr-mae" class="text-sm font-extrabold text-emerald-700">49.21m</p>
+          </div>
+          <div>
+            <span class="text-slate-500">오차 개선율</span>
+            <p id="d10-stat-imp" class="text-sm font-extrabold text-tealbrand-700">-58.9%</p>
+          </div>
+        </div>
+
+        <!-- Table -->
+        <div class="overflow-x-auto">
+          <table class="w-full text-xs sm:text-sm text-center border-collapse">
+            <thead>
+              <tr class="bg-slate-100 text-slate-700 border-b border-slate-200">
+                <th class="py-3 px-3 font-bold">생산일</th>
+                <th class="py-3 px-3 font-bold text-left">코일 LOT</th>
+                <th class="py-3 px-3 font-bold">라인</th>
+                <th class="py-3 px-3 font-bold">FB_RPM</th>
+                <th class="py-3 px-3 font-bold">실측(m)</th>
+                <th class="py-3 px-3 font-bold">IBA(m)</th>
+                <th class="py-3 px-3 font-bold">IBA 오차</th>
+                <th class="py-3 px-3 font-bold bg-tealbrand-50 text-tealbrand-800">보정 예측(m)</th>
+                <th class="py-3 px-3 font-bold bg-tealbrand-50 text-tealbrand-800">보정 오차</th>
+              </tr>
+            </thead>
+            <tbody id="d10-table-body" class="divide-y divide-slate-100">
+              <!-- Populated by JavaScript -->
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- ========================================================= -->
+    <!-- TAB 4: 엑셀 파일 직접 검증 (.xlsx 업로드)                    -->
+    <!-- ========================================================= -->
+    <section id="tab-excel" class="tab-panel hidden space-y-6">
+      <!-- Upload Zone Card -->
+      <div class="bg-white rounded-2xl p-5 sm:p-6 border border-slate-200/80 shadow-xs">
+        <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-4">
+          <div>
+            <h2 class="text-base sm:text-lg font-bold text-slateink">코일 엑셀 파일(.xlsx) 브라우저 즉시 검증</h2>
+            <p class="text-xs text-slate-500 mt-0.5">
+              업로드한 파일은 서버로 전송되지 않고 <strong>100% 브라우저 내부에서 안전하게 분석</strong>됩니다. (다중 선택 가능)
+            </p>
+          </div>
+          <div class="flex flex-wrap items-center gap-2">
+            <button onclick="runSampleExcelTest()" class="px-3.5 py-2 rounded-xl text-xs font-bold bg-tealbrand-50 text-tealbrand-700 border border-tealbrand-200 hover:bg-tealbrand-100 transition-colors cursor-pointer">
+              샘플 파일로 테스트해보기
+            </button>
+            <button id="btn-export-csv" onclick="exportExcelResultsCSV()" disabled class="px-3.5 py-2 rounded-xl text-xs font-bold bg-tealbrand-700 text-white hover:bg-tealbrand-800 disabled:opacity-40 disabled:cursor-not-allowed transition-colors cursor-pointer">
+              결과 CSV 다운로드
+            </button>
+          </div>
+        </div>
+
+        <!-- Drag & Drop Zone -->
+        <div id="drop-zone" class="border-2 border-dashed border-slate-300 hover:border-tealbrand-600 rounded-2xl p-8 text-center transition-colors bg-slate-50/50 cursor-pointer">
+          <input id="excel-file-input" type="file" accept=".xlsx,.xls" multiple class="hidden" />
+          <div class="mx-auto w-12 h-12 rounded-2xl bg-tealbrand-50 text-tealbrand-700 flex items-center justify-center mb-3">
+            <svg class="w-6 h-6" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5m-13.5-9L12 3m0 0l4.5 4.5M12 3v13.5" />
+            </svg>
+          </div>
+          <p class="text-sm font-bold text-slateink">코일 엑셀 파일(.xlsx)을 여기로 드래그하거나 클릭해서 선택하세요</p>
+          <p class="text-xs text-slate-500 mt-1">
+            시트1(코일정보) · 시트2(단위중량실측) · 시트3(IBA 증가구간 최대값 &amp; FB_RPM 중앙값) 자동 파싱
+          </p>
+        </div>
+
+        <!-- Parsing Logic Info Pills -->
+        <div class="mt-4 flex flex-wrap gap-2 text-[11px] text-slate-600">
+          <span class="px-2.5 py-1 rounded-lg bg-slate-100 border border-slate-200">✓ 1줄/2줄 IBA 헤더 자동 인식</span>
+          <span class="px-2.5 py-1 rounded-lg bg-slate-100 border border-slate-200">✓ L1/L2 라인 자동 판별</span>
+          <span class="px-2.5 py-1 rounded-lg bg-slate-100 border border-slate-200">✓ COIL_LENGTH 증가구간 최대값 추출</span>
+          <span class="px-2.5 py-1 rounded-lg bg-slate-100 border border-slate-200">✓ BAR_TEMP &gt; 500℃ FB_RPM 중앙값 계산</span>
+          <span class="px-2.5 py-1 rounded-lg bg-slate-100 border border-slate-200">✓ D10(FB-RPM) / D12(OGD) 모델 자동 적용</span>
+        </div>
+      </div>
+
+      <!-- Verification Summary Cards (Hidden until results exist) -->
+      <div id="excel-summary-wrap" class="hidden grid grid-cols-2 lg:grid-cols-4 gap-4">
+        <div class="bg-white rounded-2xl p-4 border border-slate-200/80 shadow-xs">
+          <span class="text-xs font-semibold text-slate-500">검증 완료 코일</span>
+          <p id="ex-sum-count" class="text-2xl font-extrabold text-slateink mt-1">0건</p>
+        </div>
+        <div class="bg-white rounded-2xl p-4 border border-slate-200/80 shadow-xs">
+          <span class="text-xs font-semibold text-slate-500">IBA 원본 평균 오차 (MAE)</span>
+          <p id="ex-sum-iba-mae" class="text-2xl font-extrabold text-rose-600 mt-1">-</p>
+        </div>
+        <div class="bg-white rounded-2xl p-4 border border-slate-200/80 shadow-xs">
+          <span class="text-xs font-semibold text-slate-500">모델 보정 평균 오차 (MAE)</span>
+          <p id="ex-sum-mod-mae" class="text-2xl font-extrabold text-emerald-700 mt-1">-</p>
+        </div>
+        <div class="bg-white rounded-2xl p-4 border border-slate-200/80 shadow-xs">
+          <span class="text-xs font-semibold text-slate-500">오차 개선 폭</span>
+          <p id="ex-sum-imp" class="text-2xl font-extrabold text-tealbrand-700 mt-1">-</p>
+        </div>
+      </div>
+
+      <!-- Results Table -->
+      <div class="bg-white rounded-2xl border border-slate-200/80 shadow-xs overflow-hidden">
+        <div class="p-4 sm:p-5 border-b border-slate-100 flex items-center justify-between">
+          <h3 class="text-sm sm:text-base font-bold text-slateink">엑셀 파싱 및 모델 보정 결과</h3>
+          <button id="btn-clear-excel" onclick="clearExcelResults()" class="hidden text-xs font-semibold text-slate-500 hover:text-rose-600 cursor-pointer">
+            목록 비우기
+          </button>
+        </div>
+        <div class="overflow-x-auto">
+          <table class="w-full text-xs sm:text-sm text-center border-collapse">
+            <thead>
+              <tr class="bg-slate-100 text-slate-700 border-b border-slate-200">
+                <th class="py-3 px-3 text-left font-bold">파일명 / LOT</th>
+                <th class="py-3 px-3 font-bold">적용 모델</th>
+                <th class="py-3 px-3 font-bold">라인</th>
+                <th class="py-3 px-3 font-bold">FB_RPM</th>
+                <th class="py-3 px-3 font-bold">실측길이(m)</th>
+                <th class="py-3 px-3 font-bold">IBA 증가최대(m)</th>
+                <th class="py-3 px-3 font-bold">IBA 오차</th>
+                <th class="py-3 px-3 font-bold bg-tealbrand-50 text-tealbrand-800">보정 예측(m)</th>
+                <th class="py-3 px-3 font-bold bg-tealbrand-50 text-tealbrand-800">보정 오차</th>
+                <th class="py-3 px-3 font-bold">실측최저(%)</th>
+              </tr>
+            </thead>
+            <tbody id="excel-results-body" class="divide-y divide-slate-100">
+              <tr>
+                <td colspan="10" class="py-12 text-slate-400 text-sm">
+                  아직 업로드된 파일이 없습니다. 위 영역에 <code class="font-semibold text-slate-500">.xlsx</code> 파일을 올리거나 <strong>[샘플 파일로 테스트해보기]</strong>를 눌러보세요.
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+  </main>
+
+  <!-- Footer -->
+  <footer class="bg-white border-t border-slate-200/80 py-4 mt-auto">
+    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 flex flex-col sm:flex-row items-center justify-between gap-2 text-xs text-slate-400">
+      <span>코일 실길이·단위중량 예측 모델 검증 플랫폼 · 500N D12 (OGD) &amp; SD500 D10 (FB-RPM)</span>
+      <span>Client-side Analytics · SheetJS &amp; Chart.js</span>
+    </div>
+  </footer>
+
+  <!-- ========================================================= -->
+  <!-- APPLICATION JAVASCRIPT                                    -->
+  <!-- ========================================================= -->
+  <script>
+    // =========================================================================
+    // 1. VERIFIED DATASETS & MODEL CONSTANTS
+    // =========================================================================
+
+    // 500N D12 OGD Model Parameters
+    const D12_MODES = {
+      len7:  { label: '길이 (후반 7코일)', w: 0.000, s: 2.0792, tol: 15.0, unit: 'm', errUnit: 'm', decimals: 2 },
+      len18: { label: '길이 (18코일)',    w: 0.000, s: 1.4421, tol: 15.0, unit: 'm', errUnit: 'm', decimals: 2 },
+      min18: { label: '최저값 (18코일)',  w: 0.389, s: 0.0843, tol: 0.50, unit: '%', errUnit: '%p', decimals: 4 }
+    };
+
+    // 500N D12 Verified Coil Presets
+    const D12_PRESETS = {
+      'P147453A-6A':  { actualLen: 4733.33, baseLen: 4735.242246, ibaLen: 4740.00, actualMin: -0.63, baseMin: -0.528138, ibaMin: -0.557132 },
+      'P147528A-20A': { actualLen: 4758.53, baseLen: 4748.20,     ibaLen: 4732.00, actualMin: -1.17, baseMin: -1.05,     ibaMin: -1.10 },
+      'P147531A-3B':  { actualLen: 4702.86, baseLen: 4700.50,     ibaLen: 4695.00, actualMin:  0.68, baseMin:  0.55,     ibaMin:  0.60 },
+      'P147528A-14A': { actualLen: 4726.60, baseLen: 4724.10,     ibaLen: 4719.00, actualMin: -0.03, baseMin: -0.08,     ibaMin: -0.10 },
+      'P149783A-5B':  { actualLen: 4760.36, baseLen: 4742.50,     ibaLen: 4713.00, actualMin: -1.01, baseMin: -0.92,     ibaMin: -0.95 }
+    };
+
+    // SD500 D10 Final FB-RPM Ratio Correction Constants
+    const D10_INTERCEPT = 3.985620;
+    const D10_SLOPE = -0.003243;
+
+    // SD500 D10 Exact 13-Coil Sequential Verification Data
+    const D10_COILS = [
+      { date: '2024-03-20', lot: 'P129141A-07A', line: 'L1', rpm: 923.72, actual: 5932.2, iba: 5934.0, ibaErr:   1.8, corr: 5934.0, corrErr:   1.8 },
+      { date: '2024-03-20', lot: 'P129294A-06A', line: 'L1', rpm: 913.45, actual: 5659.5, iba: 5569.0, ibaErr: -90.5, corr: 5569.0, corrErr: -90.5 },
+      { date: '2024-05-17', lot: 'P130422A-06A', line: 'L1', rpm: 913.45, actual: 6384.8, iba: 6256.0, ibaErr:-128.8, corr: 6357.7, corrErr: -27.1 },
+      { date: '2024-07-04', lot: 'P131442A-22B', line: 'L2', rpm: 912.99, actual: 6309.2, iba: 6220.0, ibaErr: -89.2, corr: 6339.7, corrErr:  30.5 },
+      { date: '2024-07-04', lot: 'P131442A-23A', line: 'L1', rpm: 912.99, actual: 6308.3, iba: 6210.0, ibaErr: -98.3, corr: 6329.5, corrErr:  21.2 },
+      { date: '2024-09-03', lot: 'P132873A-06A', line: 'L1', rpm: 913.38, actual: 6124.5, iba: 5889.0, ibaErr:-235.5, corr: 5985.9, corrErr:-138.6 },
+      { date: '2024-09-11', lot: 'P133063A-02B', line: 'L2', rpm: 913.38, actual: 6501.7, iba: 6286.0, ibaErr:-215.7, corr: 6418.3, corrErr: -83.4 },
+      { date: '2024-10-03', lot: 'P133539A-06B', line: 'L2', rpm: 913.38, actual: 6489.3, iba: 6360.0, ibaErr:-129.3, corr: 6507.6, corrErr:  18.3 },
+      { date: '2024-10-03', lot: 'P133539A-07A', line: 'L1', rpm: 913.38, actual: 6502.3, iba: 6349.0, ibaErr:-153.3, corr: 6496.4, corrErr:  -5.9 },
+      { date: '2025-05-17', lot: 'P138386A-003', line: 'L2', rpm: 923.72, actual: 3885.2, iba: 3900.0, ibaErr:  14.8, corr: 3901.2, corrErr:  16.0 },
+      { date: '2026-04-17', lot: 'P145856A-2B',  line: 'L2', rpm: 923.65, actual: 6150.0, iba: 6221.0, ibaErr:  71.0, corr: 6211.1, corrErr:  61.1 },
+      { date: '2026-04-17', lot: 'P145861A-14B', line: 'L2', rpm: 923.65, actual: 5992.6, iba: 6011.0, ibaErr:  18.4, corr: 6001.4, corrErr:   8.8 },
+      { date: '2026-05-08', lot: 'P146660A-3B',  line: 'L2', rpm: 932.03, actual: 6243.8, iba: 6555.0, ibaErr: 311.2, corr: 6380.0, corrErr: 136.2 }
+    ];
+
+    // Chart instances registry
+    const charts = {};
+    let excelResults = [];
+
+    // =========================================================================
+    // 2. TOAST NOTIFICATION UTILITY (Replaces alert())
+    // =========================================================================
+    function showToast(message, type = 'info') {
+      const container = document.getElementById('toast-container');
+      const colors = {
+        success: 'bg-tealbrand-800 text-white border-tealbrand-700',
+        error: 'bg-rose-700 text-white border-rose-600',
+        info: 'bg-slateink text-white border-slate-700'
+      };
+      const el = document.createElement('div');
+      el.className = `pointer-events-auto px-4 py-3 rounded-xl shadow-lg border text-xs sm:text-sm font-semibold transition-all duration-300 ${colors[type] || colors.info}`;
+      el.textContent = message;
+      container.appendChild(el);
+      setTimeout(() => {
+        el.style.opacity = '0';
+        el.style.transform = 'translateY(8px)';
+        setTimeout(() => el.remove(), 300);
+      }, 3200);
+    }
+
+    // =========================================================================
+    // 3. TAB SWITCHING & RESPONSIVE CHART HANDLING
+    // =========================================================================
+    document.querySelectorAll('.tab-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const target = btn.dataset.tab;
+        // Update button states
+        document.querySelectorAll('.tab-btn').forEach(b => {
+          const active = b.dataset.tab === target;
+          b.classList.toggle('border-tealbrand-700', active);
+          b.classList.toggle('text-tealbrand-700', active);
+          b.classList.toggle('font-bold', active);
+          b.classList.toggle('border-transparent', !active);
+          b.classList.toggle('text-slate-500', !active);
+          b.classList.toggle('font-semibold', !active);
+        });
+        // Toggle panels
+        document.querySelectorAll('.tab-panel').forEach(p => {
+          p.classList.toggle('hidden', p.id !== `tab-${target}`);
+        });
+        // Initialize or resize charts for visible tab
+        requestAnimationFrame(() => {
+          if (target === 'overview') {
+            if (!charts.overviewD12) initOverviewCharts();
+            else { charts.overviewD12.resize(); charts.overviewD10.resize(); }
+          } else if (target === 'd12') {
+            if (!charts.d12Hit) initD12HitChart('min');
+            else charts.d12Hit.resize();
+          } else if (target === 'd10') {
+            if (!charts.d10Scatter) initD10ScatterChart();
+            else charts.d10Scatter.resize();
+          }
+        });
+      });
+    });
+
+    // =========================================================================
+    // 4. TAB 1: OVERVIEW CHARTS
+    // =========================================================================
+    function initOverviewCharts() {
+      // Chart 1: 500N D12 MAE Grouped Bar Chart
+      const ctx1 = document.getElementById('overviewD12Chart').getContext('2d');
+      charts.overviewD12 = new Chart(ctx1, {
+        type: 'bar',
+        data: {
+          labels: ['생산일 교차검증 (18코일)', '시간순 후반 검증 (7코일)'],
+          datasets: [
+            { label: 'IBA 기록',       data: [23.64, 21.83], backgroundColor: '#CBD5E1', borderRadius: 6 },
+            { label: '기존 모델',      data: [20.28, 11.80], backgroundColor: '#94A3B8', borderRadius: 6 },
+            { label: '개선 후보',      data: [19.63, 11.06], backgroundColor: '#5EA3A6', borderRadius: 6 },
+            { label: '자동 보정 (OGD)', data: [18.47,  9.05], backgroundColor: '#0B5B5E', borderRadius: 6 }
+          ]
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          plugins: {
+            legend: { position: 'bottom', labels: { usePointStyle: true, boxWidth: 8, font: { family: 'Noto Sans KR', size: 11 } } },
+            tooltip: { callbacks: { label: ctx => `${ctx.dataset.label}: ${ctx.parsed.y.toFixed(2)}m` } }
+          },
+          scales: {
+            y: { beginAtZero: true, max: 28, title: { display: true, text: '평균 절대오차 (m)', font: { size: 11, weight: 'bold' } }, grid: { color: '#F1F5F9' } },
+            x: { grid: { display: false }, ticks: { font: { family: 'Noto Sans KR', weight: '600', size: 12 } } }
+          }
+        }
+      });
+
+      // Chart 2: SD500 D10 MAE Progression Bar Chart
+      const ctx2 = document.getElementById('overviewD10Chart').getContext('2d');
+      charts.overviewD10 = new Chart(ctx2, {
+        type: 'bar',
+        data: {
+          labels: ['IBA 원본', '기존 D10 보정', '통합 OGD', 'FB-RPM\n(교차검증)', 'FB-RPM\n(순차검증)'],
+          datasets: [{
+            label: '평균 절대오차 (MAE)',
+            data: [119.83, 109.63, 90.14, 53.73, 49.21],
+            backgroundColor: ['#CBD5E1', '#94A3B8', '#64748B', '#15803D', '#0B5B5E'],
+            borderRadius: 8,
+            maxBarThickness: 46
+          }]
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          plugins: {
+            legend: { display: false },
+            tooltip: { callbacks: { label: ctx => `MAE: ${ctx.parsed.y.toFixed(2)}m` } }
+          },
+          scales: {
+            y: { beginAtZero: true, max: 140, title: { display: true, text: '평균 절대오차 (m)', font: { size: 11, weight: 'bold' } }, grid: { color: '#F1F5F9' } },
+            x: { grid: { display: false }, ticks: { font: { family: 'Noto Sans KR', size: 11, weight: '600' } } }
+          }
+        }
+      });
+    }
+
+    // =========================================================================
+    // 5. TAB 2: 500N D12 HIT-RATE CHART & OGD SIMULATOR
+    // =========================================================================
+    function initD12HitChart(mode) {
+      const ctx = document.getElementById('d12HitChart').getContext('2d');
+      charts.d12Hit = new Chart(ctx, {
+        type: 'bar',
+        data: getD12HitChartData(mode),
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          plugins: {
+            legend: { display: false },
+            tooltip: { callbacks: { label: ctx => `${ctx.parsed.y}코일` } }
+          },
+          scales: {
+            y: {
+              beginAtZero: true,
+              ticks: { stepSize: mode === 'min' ? 2 : 1, precision: 0 },
+              title: { display: true, text: '코일 수', font: { size: 11, weight: 'bold' } },
+              grid: { color: '#F1F5F9' }
+            },
+            x: { grid: { display: false }, ticks: { font: { family: 'Noto Sans KR', size: 11, weight: '600' } } }
+          }
+        }
+      });
+    }
+
+    function getD12HitChartData(mode) {
+      if (mode === 'min') {
+        return {
+          labels: ['위험 방향 이탈\n(하단 -0.5%p 초과)', '목표범위 내 적중\n(±0.5%p)', '안전 방향 과잉\n(하단 +0.5%p 초과)'],
+          datasets: [{
+            data: [1, 13, 4],
+            backgroundColor: ['#F59E0B', '#0B5B5E', '#CBD5E1'],
+            borderRadius: 8,
+            maxBarThickness: 56
+          }]
+        };
+      }
+      return {
+        labels: ['과대 예측\n(+15m 초과)', '목표범위 내 적중\n(±15m)', '과소 예측\n(-15m 초과)'],
+        datasets: [{
+          data: [0, 6, 1],
+          backgroundColor: ['#F59E0B', '#0B5B5E', '#CBD5E1'],
+          borderRadius: 8,
+          maxBarThickness: 56
+        }]
+      };
+    }
+
+    function switchD12HitChart(mode) {
+      const btnMin = document.getElementById('btn-hit-min');
+      const btnLen = document.getElementById('btn-hit-len');
+      if (mode === 'min') {
+        btnMin.className = 'flex-1 py-2 px-3 rounded-lg text-xs font-bold transition-all bg-white text-tealbrand-700 shadow-xs cursor-pointer';
+        btnLen.className = 'flex-1 py-2 px-3 rounded-lg text-xs font-semibold transition-all text-slate-500 hover:text-slateink cursor-pointer';
+        document.getElementById('d12-hit-subtitle').textContent = '생산일 교차검증 18코일 · 최저값 적중';
+        document.getElementById('d12-hit-ratio').textContent = '13 / 18코일';
+        document.getElementById('d12-hit-pct').textContent = '72.2%';
+      } else {
+        btnLen.className = 'flex-1 py-2 px-3 rounded-lg text-xs font-bold transition-all bg-white text-tealbrand-700 shadow-xs cursor-pointer';
+        btnMin.className = 'flex-1 py-2 px-3 rounded-lg text-xs font-semibold transition-all text-slate-500 hover:text-slateink cursor-pointer';
+        document.getElementById('d12-hit-subtitle').textContent = '시간순 후반 검증 7코일 · 실길이 적중';
+        document.getElementById('d12-hit-ratio').textContent = '6 / 7코일';
+        document.getElementById('d12-hit-pct').textContent = '85.7%';
+      }
+
+      if (charts.d12Hit) {
+        charts.d12Hit.data = getD12HitChartData(mode);
+        charts.d12Hit.options.scales.y.ticks.stepSize = mode === 'min' ? 2 : 1;
+        charts.d12Hit.options.scales.y.max = mode === 'min' ? 16 : 8;
+        charts.d12Hit.update();
+      }
+    }
+
+    function loadD12Preset(lot) {
+      const p = D12_PRESETS[lot];
+      if (!p) return;
+      const modeKey = document.getElementById('d12-mode').value;
+      if (modeKey === 'min18') {
+        document.getElementById('d12-base').value = p.baseMin;
+        document.getElementById('d12-iba').value = p.ibaMin;
+        document.getElementById('d12-actual').value = p.actualMin;
+      } else {
+        document.getElementById('d12-base').value = p.baseLen;
+        document.getElementById('d12-iba').value = p.ibaLen;
+        document.getElementById('d12-actual').value = p.actualLen;
+      }
+      updateD12Sim();
+      showToast(`${lot} 프리셋 값을 불러왔습니다.`, 'info');
+    }
+
+    function updateD12Sim() {
+      const modeKey = document.getElementById('d12-mode').value;
+      const cfg = D12_MODES[modeKey];
+      const base = parseFloat(document.getElementById('d12-base').value);
+      const iba = parseFloat(document.getElementById('d12-iba').value);
+      const actualRaw = document.getElementById('d12-actual').value;
+      const actual = actualRaw !== '' ? parseFloat(actualRaw) : NaN;
+
+      // Auto-switch preset values if user toggles between length & minimum while values are clearly mismatched
+      if (modeKey === 'min18' && Math.abs(base) > 100) {
+        loadD12Preset('P147453A-6A');
+        return;
+      }
+      if (modeKey !== 'min18' && Math.abs(base) < 100 && !isNaN(base)) {
+        loadD12Preset('P147453A-6A');
+        return;
+      }
+
+      document.getElementById('d12-out-params').textContent = `w=${cfg.w.toFixed(3)}, s=${cfg.s >= 0 ? '+' : ''}${cfg.s.toFixed(4)}`;
+
+      if (isNaN(base) || isNaN(iba)) {
+        document.getElementById('d12-out-pred').textContent = '-';
+        document.getElementById('d12-out-err').textContent = '-';
+        document.getElementById('d12-out-iba-err').textContent = '-';
+        return;
+      }
+
+      const pred = (1 - cfg.w) * base + cfg.w * iba + cfg.s;
+      document.getElementById('d12-out-pred').textContent = `${pred.toFixed(cfg.decimals)}${cfg.unit}`;
+
+      const badge = document.getElementById('d12-out-badge');
+      if (!isNaN(actual)) {
+        const err = pred - actual;
+        const ibaErr = iba - actual;
+        const pass = Math.abs(err) <= cfg.tol;
+        document.getElementById('d12-out-err').textContent = `${err >= 0 ? '+' : ''}${err.toFixed(cfg.decimals)}${cfg.errUnit}`;
+        document.getElementById('d12-out-iba-err').textContent = `${ibaErr >= 0 ? '+' : ''}${ibaErr.toFixed(cfg.decimals)}${cfg.errUnit}`;
+        if (pass) {
+          badge.className = 'inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-sm font-extrabold bg-softgreen text-emerald-800 border border-emerald-300 self-start sm:self-auto';
+          badge.textContent = `목표범위 내 적중 (PASS · ±${cfg.tol}${cfg.errUnit})`;
+        } else {
+          badge.className = 'inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-sm font-extrabold bg-amber-100 text-amber-900 border border-amber-300 self-start sm:self-auto';
+          badge.textContent = `허용오차 초과 (CHECK · ±${cfg.tol}${cfg.errUnit})`;
+        }
+      } else {
+        document.getElementById('d12-out-err').textContent = '실측값 미입력';
+        document.getElementById('d12-out-iba-err').textContent = '-';
+        badge.className = 'inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-sm font-bold bg-slate-200 text-slate-600 self-start sm:self-auto';
+        badge.textContent = '예측 완료 (실측 대기)';
+      }
+    }
+
+    // =========================================================================
+    // 6. TAB 3: SD500 D10 SIMULATOR, SCATTER PLOT & TABLE FILTER
+    // =========================================================================
+    function syncD10Rpm(source) {
+      const slider = document.getElementById('d10-sim-rpm-slider');
+      const input = document.getElementById('d10-sim-rpm');
+      if (source === 'slider') input.value = slider.value;
+      else slider.value = Math.min(950, Math.max(890, parseFloat(input.value) || 913));
+      updateD10Sim();
+    }
+
+    function updateD10Sim() {
+      const iba = parseFloat(document.getElementById('d10-sim-iba').value);
+      const rpm = parseFloat(document.getElementById('d10-sim-rpm').value);
+      const actualRaw = document.getElementById('d10-sim-actual').value;
+      const actual = actualRaw !== '' ? parseFloat(actualRaw) : NaN;
+
+      document.getElementById('d10-sim-iba-lbl').textContent = isNaN(iba) ? '-' : `${iba.toFixed(1)} m`;
+      document.getElementById('d10-sim-rpm-lbl').textContent = isNaN(rpm) ? '-' : `${rpm.toFixed(1)} rpm`;
+
+      if (isNaN(iba) || isNaN(rpm)) return;
+
+      const ratio = D10_INTERCEPT + D10_SLOPE * rpm;
+      const pred = iba * ratio;
+      const delta = pred - iba;
+
+      document.getElementById('d10-out-pred').textContent = `${pred.toFixed(1)} m`;
+      document.getElementById('d10-out-ratio').textContent = ratio.toFixed(6);
+      document.getElementById('d10-out-delta').textContent = `${delta >= 0 ? '+' : ''}${delta.toFixed(1)} m`;
+
+      if (!isNaN(actual)) {
+        const ibaErr = iba - actual;
+        const corrErr = pred - actual;
+        document.getElementById('d10-out-iba-err').textContent = `${ibaErr >= 0 ? '+' : ''}${ibaErr.toFixed(1)} m`;
+        document.getElementById('d10-out-corr-err').textContent = `${corrErr >= 0 ? '+' : ''}${corrErr.toFixed(1)} m`;
+      } else {
+        document.getElementById('d10-out-iba-err').textContent = '-';
+        document.getElementById('d10-out-corr-err').textContent = '-';
+      }
+    }
+
+    function initD10ScatterChart() {
+      const ctx = document.getElementById('d10ScatterChart').getContext('2d');
+      const l1Pts = D10_COILS.filter(c => c.line === 'L1').map(c => ({
+        x: c.rpm,
+        y: Number((((c.iba - c.actual) / c.actual) * 100).toFixed(2)),
+        lot: c.lot,
+        ibaErr: c.ibaErr
+      }));
+      const l2Pts = D10_COILS.filter(c => c.line === 'L2').map(c => ({
+        x: c.rpm,
+        y: Number((((c.iba - c.actual) / c.actual) * 100).toFixed(2)),
+        lot: c.lot,
+        ibaErr: c.ibaErr
+      }));
+
+      // Linear regression line for visual reference: y ≈ 0.324 * (rpm - 921.5)
+      const regPts = [
+        { x: 911, y: Number(((1 / (D10_INTERCEPT + D10_SLOPE * 911) - 1) * 100).toFixed(2)) },
+        { x: 934, y: Number(((1 / (D10_INTERCEPT + D10_SLOPE * 934) - 1) * 100).toFixed(2)) }
+      ];
+
+      charts.d10Scatter = new Chart(ctx, {
+        type: 'scatter',
+        data: {
+          datasets: [
+            {
+              label: 'L1 라인 (6코일)',
+              data: l1Pts,
+              backgroundColor: '#0B5B5E',
+              pointRadius: 6,
+              pointHoverRadius: 8
+            },
+            {
+              label: 'L2 라인 (7코일)',
+              data: l2Pts,
+              backgroundColor: '#F59E0B',
+              pointRadius: 6,
+              pointHoverRadius: 8
+            },
+            {
+              label: '선형 회귀 추세선 (r = 0.923)',
+              data: regPts,
+              type: 'line',
+              borderColor: '#64748B',
+              borderWidth: 2,
+              borderDash: [6, 4],
+              pointRadius: 0,
+              fill: false
+            }
+          ]
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          plugins: {
+            legend: { position: 'bottom', labels: { usePointStyle: true, font: { family: 'Noto Sans KR', size: 11 } } },
+            tooltip: {
+              callbacks: {
+                label: ctx => {
+                  const raw = ctx.raw;
+                  if (!raw.lot) return `추세선: ${raw.x} rpm → ${raw.y > 0 ? '+' : ''}${raw.y}%`;
+                  return `${raw.lot}: ${raw.x} rpm | IBA 오차 ${raw.y > 0 ? '+' : ''}${raw.y}% (${raw.ibaErr > 0 ? '+' : ''}${raw.ibaErr}m)`;
+                }
+              }
+            }
+          },
+          scales: {
+            x: {
+              min: 910,
+              max: 935,
+              title: { display: true, text: '피니싱 블록 기준속도 FB_RPM (rpm)', font: { size: 11, weight: 'bold' } },
+              grid: { color: '#F1F5F9' }
+            },
+            y: {
+              min: -5,
+              max: 6,
+              title: { display: true, text: 'IBA 상대오차 (%)', font: { size: 11, weight: 'bold' } },
+              grid: { color: ctx => ctx.tick.value === 0 ? '#94A3B8' : '#F1F5F9' }
+            }
+          }
+        }
+      });
+    }
+
+    function filterD10Table(lineFilter) {
+      // Update button styles
+      document.querySelectorAll('.d10-filter-btn').forEach(btn => {
+        const active = btn.dataset.line === lineFilter;
+        btn.className = active
+          ? 'd10-filter-btn px-3.5 py-1.5 rounded-lg text-xs font-bold bg-white text-tealbrand-700 shadow-xs cursor-pointer'
+          : 'd10-filter-btn px-3.5 py-1.5 rounded-lg text-xs font-semibold text-slate-600 hover:text-slateink cursor-pointer';
+      });
+
+      const list = lineFilter === 'ALL' ? D10_COILS : D10_COILS.filter(c => c.line === lineFilter);
+
+      // Compute summary metrics
+      const ibaMae = list.reduce((acc, c) => acc + Math.abs(c.ibaErr), 0) / list.length;
+      const corrMae = list.reduce((acc, c) => acc + Math.abs(c.corrErr), 0) / list.length;
+      const impPct = ((corrMae - ibaMae) / ibaMae) * 100;
+
+      document.getElementById('d10-stat-count').textContent = `${list.length}코일`;
+      document.getElementById('d10-stat-iba-mae').textContent = `${ibaMae.toFixed(2)}m`;
+      document.getElementById('d10-stat-corr-mae').textContent = `${corrMae.toFixed(2)}m`;
+      document.getElementById('d10-stat-imp').textContent = `${impPct >= 0 ? '+' : ''}${impPct.toFixed(1)}%`;
+
+      // Render rows
+      const tbody = document.getElementById('d10-table-body');
+      tbody.innerHTML = list.map(c => {
+        const improved = Math.abs(c.corrErr) < Math.abs(c.ibaErr);
+        const lineBadge = c.line === 'L1'
+          ? '<span class="px-2 py-0.5 rounded-md text-[11px] font-bold bg-tealbrand-50 text-tealbrand-700">L1</span>'
+          : '<span class="px-2 py-0.5 rounded-md text-[11px] font-bold bg-amber-50 text-amber-800">L2</span>';
+        return `
+          <tr class="hover:bg-slate-50/70 transition-colors">
+            <td class="py-2.5 px-3 text-slate-500 font-mono">${c.date}</td>
+            <td class="py-2.5 px-3 text-left font-bold text-slateink">${c.lot}</td>
+            <td class="py-2.5 px-3">${lineBadge}</td>
+            <td class="py-2.5 px-3 font-mono text-slate-600">${c.rpm.toFixed(2)}</td>
+            <td class="py-2.5 px-3 font-mono text-slate-700">${c.actual.toFixed(1)}</td>
+            <td class="py-2.5 px-3 font-mono text-slate-600">${c.iba.toFixed(1)}</td>
+            <td class="py-2.5 px-3 font-mono font-semibold ${Math.abs(c.ibaErr) > 100 ? 'text-rose-600' : 'text-slate-600'}">
+              ${c.ibaErr >= 0 ? '+' : ''}${c.ibaErr.toFixed(1)}m
+            </td>
+            <td class="py-2.5 px-3 font-mono font-bold bg-tealbrand-50/40 text-tealbrand-900">${c.corr.toFixed(1)}</td>
+            <td class="py-2.5 px-3 font-mono font-bold bg-tealbrand-50/40 ${improved ? 'text-emerald-700' : 'text-amber-700'}">
+              ${c.corrErr >= 0 ? '+' : ''}${c.corrErr.toFixed(1)}m
+            </td>
+          </tr>
+        `;
+      }).join('');
+    }
+
+    // =========================================================================
+    // 7. TAB 4: CLIENT-SIDE EXCEL (.xlsx) PARSING & VERIFICATION
+    // =========================================================================
+    const dropZone = document.getElementById('drop-zone');
+    const fileInput = document.getElementById('excel-file-input');
+
+    dropZone.addEventListener('click', () => fileInput.click());
+    dropZone.addEventListener('dragover', e => {
+      e.preventDefault();
+      dropZone.classList.add('border-tealbrand-600', 'bg-tealbrand-50/40');
+    });
+    dropZone.addEventListener('dragleave', () => {
+      dropZone.classList.remove('border-tealbrand-600', 'bg-tealbrand-50/40');
+    });
+    dropZone.addEventListener('drop', e => {
+      e.preventDefault();
+      dropZone.classList.remove('border-tealbrand-600', 'bg-tealbrand-50/40');
+      if (e.dataTransfer.files.length) handleExcelFiles(e.dataTransfer.files);
+    });
+    fileInput.addEventListener('change', e => {
+      if (e.target.files.length) handleExcelFiles(e.target.files);
+      fileInput.value = '';
+    });
+
+    /**
+     * Extracts the maximum value from the longest upward-ramping segment of COIL_LENGTH.
+     * Splits segments whenever consecutive values drop by more than 100m (coil reset).
+     */
+    function extractRampMax(values) {
+      const clean = values.filter(v => typeof v === 'number' && !isNaN(v));
+      if (!clean.length) return NaN;
+
+      let bestPeak = NaN;
+      let bestSpan = -1;
+      let segMin = clean[0];
+      let segMax = clean[0];
+
+      for (let i = 1; i < clean.length; i++) {
+        const diff = clean[i] - clean[i - 1];
+        if (diff < -100) {
+          // Close previous segment
+          const span = segMax - segMin;
+          if (span > bestSpan) {
+            bestSpan = span;
+            bestPeak = segMax;
+          }
+          segMin = clean[i];
+          segMax = clean[i];
+        } else {
+          if (clean[i] < segMin) segMin = clean[i];
+          if (clean[i] > segMax) segMax = clean[i];
+        }
+      }
+      // Final segment check
+      const finalSpan = segMax - segMin;
+      if (finalSpan > bestSpan) {
+        bestPeak = segMax;
+      }
+      return bestPeak;
+    }
+
+    function computeMedian(arr) {
+      const sorted = arr.filter(v => typeof v === 'number' && !isNaN(v)).sort((a, b) => a - b);
+      if (!sorted.length) return NaN;
+      const mid = Math.floor(sorted.length / 2);
+      return sorted.length % 2 !== 0 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+    }
+
+    async function handleExcelFiles(fileList) {
+      const files = Array.from(fileList);
+      let successCount = 0;
+
+      for (const file of files) {
+        try {
+          const data = await file.arrayBuffer();
+          const workbook = XLSX.read(data, { type: 'array' });
+          const parsed = parseCoilWorkbook(workbook, file.name);
+          excelResults.push(parsed);
+          successCount++;
+        } catch (err) {
+          console.error('Excel parse error:', file.name, err);
+          showToast(`"${file.name}" 파싱 중 오류가 발생했습니다. 시트 구성을 확인해 주세요.`, 'error');
+        }
+      }
+
+      if (successCount > 0) {
+        renderExcelResults();
+        showToast(`${successCount}개 엑셀 파일 검증을 완료했습니다.`, 'success');
+      }
+    }
+
+    function parseCoilWorkbook(wb, filename) {
+      const sheets = wb.SheetNames;
+
+      // 1) Sheet 1: 코일정보
+      let lot = filename.replace(/\.(xlsx|xls)$/i, '');
+      let specText = filename.toUpperCase();
+      const infoSheetName = sheets.find(s => s.includes('코일정보')) || sheets[0];
+      if (infoSheetName) {
+        const infoRows = XLSX.utils.sheet_to_json(wb.Sheets[infoSheetName], { header: 1 });
+        for (const r of infoRows) {
+          if (!r || r.length < 2) continue;
+          const k = String(r[0] ?? '').trim();
+          const v = String(r[1] ?? '').trim();
+          if (k.includes('코일 ID') || k.includes('LOT')) {
+            if (v) lot = v;
+          }
+          specText += ' ' + v.toUpperCase();
+        }
+      }
+
+      // 2) Sheet 2: 단위중량실측
+      let actualLen = NaN;
+      let actualMin = NaN;
+      const wtSheetName = sheets.find(s => s.includes('단위중량')) || sheets[1];
+      if (wtSheetName) {
+        const wtRows = XLSX.utils.sheet_to_json(wb.Sheets[wtSheetName], { defval: null });
+        const distVals = [];
+        const kgVals = [];
+        for (const row of wtRows) {
+          for (const [k, val] of Object.entries(row)) {
+            const num = parseFloat(val);
+            if (isNaN(num)) continue;
+            if (k.includes('Distance')) distVals.push(num);
+            if (k.includes('Kg/M') && k.includes('%')) kgVals.push(num);
+          }
+        }
+        if (distVals.length) actualLen = Math.max(...distVals);
+        if (kgVals.length) actualMin = Math.min(...kgVals);
+      }
+
+      // 3) Sheet 3: IBA (Handle both 1-row and 2-row headers)
+      let ibaRampMax = NaN;
+      let fbRpmMed = NaN;
+      let line = 'L2';
+      const ibaSheetName = sheets[2] || sheets.find(s => s.toUpperCase().includes('IBA'));
+      if (ibaSheetName) {
+        const raw = XLSX.utils.sheet_to_json(wb.Sheets[ibaSheetName], { header: 1, defval: null });
+        if (raw.length > 3) {
+          let headerRowIdx = 0;
+          let dataStartIdx = 1;
+          const c0r0 = String(raw[0]?.[0] ?? '').trim();
+          const c0r1 = String(raw[1]?.[0] ?? '').trim();
+          if (c0r0 === 'Time' && c0r1 === 'time') {
+            headerRowIdx = 1;
+            dataStartIdx = 3;
+          } else if (raw[1] && raw[1].some(v => typeof v === 'string' && v.includes('['))) {
+            headerRowIdx = 0;
+            dataStartIdx = 2;
+          }
+
+          const rawHeaders = raw[headerRowIdx].map(h => String(h ?? '').trim());
+          line = rawHeaders.some(h => h.includes('L1.')) ? 'L1' : 'L2';
+          const normHeaders = rawHeaders.map(h => h.replace(/L1\./g, '.').replace(/L2\./g, '.'));
+
+          const lenIdx = normHeaders.findIndex(h => h.includes('COIL_LENGTH'));
+          const tempIdx = normHeaders.findIndex(h => h.includes('BAR_TEMP'));
+          const fbIdx = normHeaders.findIndex(h => h.includes('FINISHING BLOCK Reference Speed'));
+
+          const lenSeries = [];
+          const fbActive = [];
+
+          for (let i = dataStartIdx; i < raw.length; i++) {
+            const row = raw[i];
+            if (!row) continue;
+            if (lenIdx >= 0) {
+              const lv = parseFloat(row[lenIdx]);
+              if (!isNaN(lv)) lenSeries.push(lv);
+            }
+            if (tempIdx >= 0 && fbIdx >= 0) {
+              const tv = parseFloat(row[tempIdx]);
+              const fv = parseFloat(row[fbIdx]);
+              if (!isNaN(tv) && tv > 500 && !isNaN(fv)) {
+                fbActive.push(fv);
+              }
+            }
+          }
+          ibaRampMax = extractRampMax(lenSeries);
+          fbRpmMed = computeMedian(fbActive);
+        }
+      }
+
+      // 4) Auto-detect model (SD500 D10 vs 500N D12) & apply correction
+      const isD10 = specText.includes('D10') || specText.includes('SD500');
+      let modelName = '';
+      let predLen = NaN;
+
+      if (isD10 && !isNaN(ibaRampMax) && !isNaN(fbRpmMed)) {
+        modelName = 'SD500 D10 (FB-RPM)';
+        predLen = ibaRampMax * (D10_INTERCEPT + D10_SLOPE * fbRpmMed);
+      } else {
+        modelName = '500N D12 (OGD)';
+        // When only IBA is extracted from raw Excel without external Ridge/PR9 base, apply OGD shift (+2.0792m)
+        predLen = !isNaN(ibaRampMax) ? ibaRampMax + D12_MODES.len7.s : NaN;
+      }
+
+      return {
+        filename,
+        lot,
+        modelName,
+        line,
+        fbRpm: fbRpmMed,
+        actualLen,
+        ibaLen: ibaRampMax,
+        ibaErr: (!isNaN(ibaRampMax) && !isNaN(actualLen)) ? ibaRampMax - actualLen : NaN,
+        predLen,
+        predErr: (!isNaN(predLen) && !isNaN(actualLen)) ? predLen - actualLen : NaN,
+        actualMin
+      };
+    }
+
+    function runSampleExcelTest() {
+      const samples = [
+        {
+          filename: 'sd500_D10_코일번호_20241003.xlsx',
+          lot: 'P133539A-07A',
+          modelName: 'SD500 D10 (FB-RPM)',
+          line: 'L1',
+          fbRpm: 913.38,
+          actualLen: 6502.30,
+          ibaLen: 6349.00,
+          ibaErr: -153.30,
+          predLen: 6349.00 * (D10_INTERCEPT + D10_SLOPE * 913.38),
+          predErr: 6349.00 * (D10_INTERCEPT + D10_SLOPE * 913.38) - 6502.30,
+          actualMin: -0.45
+        },
+        {
+          filename: 'sd500_D10_코일번호_20260508.xlsx',
+          lot: 'P146660A-3B',
+          modelName: 'SD500 D10 (FB-RPM)',
+          line: 'L2',
+          fbRpm: 932.03,
+          actualLen: 6243.80,
+          ibaLen: 6555.00,
+          ibaErr: 311.20,
+          predLen: 6555.00 * (D10_INTERCEPT + D10_SLOPE * 932.03),
+          predErr: 6555.00 * (D10_INTERCEPT + D10_SLOPE * 932.03) - 6243.80,
+          actualMin: -0.82
+        },
+        {
+          filename: '500N_D12_코일번호_2026060403.xlsx',
+          lot: 'P147453A-6A',
+          modelName: '500N D12 (OGD)',
+          line: 'L1',
+          fbRpm: 1007.70,
+          actualLen: 4733.33,
+          ibaLen: 4740.00,
+          ibaErr: 6.67,
+          predLen: 4737.32,
+          predErr: 3.99,
+          actualMin: -0.63
+        }
+      ];
+      excelResults = samples;
+      renderExcelResults();
+      showToast('샘플 3개 코일(D10 2건 · D12 1건) 검증 결과를 불러왔습니다.', 'success');
+    }
+
+    function clearExcelResults() {
+      excelResults = [];
+      renderExcelResults();
+      showToast('검증 결과 목록을 초기화했습니다.', 'info');
+    }
+
+    function renderExcelResults() {
+      const tbody = document.getElementById('excel-results-body');
+      const sumWrap = document.getElementById('excel-summary-wrap');
+      const btnCsv = document.getElementById('btn-export-csv');
+      const btnClear = document.getElementById('btn-clear-excel');
+
+      if (!excelResults.length) {
+        sumWrap.classList.add('hidden');
+        btnCsv.disabled = true;
+        btnClear.classList.add('hidden');
+        tbody.innerHTML = `
+          <tr>
+            <td colspan="10" class="py-12 text-slate-400 text-sm">
+              아직 업로드된 파일이 없습니다. 위 영역에 <code class="font-semibold text-slate-500">.xlsx</code> 파일을 올리거나 <strong>[샘플 파일로 테스트해보기]</strong>를 눌러보세요.
+            </td>
+          </tr>`;
+        return;
+      }
+
+      sumWrap.classList.remove('hidden');
+      btnCsv.disabled = false;
+      btnClear.classList.remove('hidden');
+
+      // Summary metrics
+      const validIba = excelResults.filter(r => !isNaN(r.ibaErr));
+      const validPred = excelResults.filter(r => !isNaN(r.predErr));
+      const ibaMae = validIba.length ? validIba.reduce((s, r) => s + Math.abs(r.ibaErr), 0) / validIba.length : NaN;
+      const predMae = validPred.length ? validPred.reduce((s, r) => s + Math.abs(r.predErr), 0) / validPred.length : NaN;
+
+      document.getElementById('ex-sum-count').textContent = `${excelResults.length}건`;
+      document.getElementById('ex-sum-iba-mae').textContent = isNaN(ibaMae) ? '-' : `${ibaMae.toFixed(2)}m`;
+      document.getElementById('ex-sum-mod-mae').textContent = isNaN(predMae) ? '-' : `${predMae.toFixed(2)}m`;
+      if (!isNaN(ibaMae) && !isNaN(predMae) && ibaMae > 0) {
+        const pct = ((predMae - ibaMae) / ibaMae) * 100;
+        document.getElementById('ex-sum-imp').textContent = `${pct >= 0 ? '+' : ''}${pct.toFixed(1)}%`;
+      } else {
+        document.getElementById('ex-sum-imp').textContent = '-';
+      }
+
+      const fmt = (v, d = 2, suffix = '') => isNaN(v) ? '-' : `${v.toFixed(d)}${suffix}`;
+      const fmtSign = (v, d = 2, suffix = '') => isNaN(v) ? '-' : `${v >= 0 ? '+' : ''}${v.toFixed(d)}${suffix}`;
+
+      tbody.innerHTML = excelResults.map(r => {
+        const improved = !isNaN(r.predErr) && !isNaN(r.ibaErr) && Math.abs(r.predErr) < Math.abs(r.ibaErr);
+        return `
+          <tr class="hover:bg-slate-50/70 transition-colors">
+            <td class="py-3 px-3 text-left">
+              <div class="font-bold text-slateink">${r.lot}</div>
+              <div class="text-[11px] text-slate-400 truncate max-w-[180px]" title="${r.filename}">${r.filename}</div>
+            </td>
+            <td class="py-3 px-3">
+              <span class="px-2 py-0.5 rounded-md text-[11px] font-bold ${r.modelName.includes('D10') ? 'bg-amber-50 text-amber-800' : 'bg-tealbrand-50 text-tealbrand-700'}">
+                ${r.modelName}
+              </span>
+            </td>
+            <td class="py-3 px-3 font-bold text-slate-600">${r.line}</td>
+            <td class="py-3 px-3 font-mono text-slate-600">${fmt(r.fbRpm, 2)}</td>
+            <td class="py-3 px-3 font-mono font-semibold text-slateink">${fmt(r.actualLen, 2)}</td>
+            <td class="py-3 px-3 font-mono text-slate-600">${fmt(r.ibaLen, 2)}</td>
+            <td class="py-3 px-3 font-mono text-rose-600 font-semibold">${fmtSign(r.ibaErr, 2, 'm')}</td>
+            <td class="py-3 px-3 font-mono font-bold bg-tealbrand-50/40 text-tealbrand-900">${fmt(r.predLen, 2)}</td>
+            <td class="py-3 px-3 font-mono font-bold bg-tealbrand-50/40 ${improved ? 'text-emerald-700' : 'text-slate-700'}">${fmtSign(r.predErr, 2, 'm')}</td>
+            <td class="py-3 px-3 font-mono text-slate-600">${fmt(r.actualMin, 2, '%')}</td>
+          </tr>
+        `;
+      }).join('');
+    }
+
+    function exportExcelResultsCSV() {
+      if (!excelResults.length) return;
+      const headers = ['파일명', 'LOT', '적용모델', '라인', 'FB_RPM', '실측길이(m)', 'IBA증가구간최대(m)', 'IBA오차(m)', '보정예측(m)', '보정오차(m)', '실측최저(%)'];
+      const rows = excelResults.map(r => [
+        `"${r.filename}"`,
+        `"${r.lot}"`,
+        `"${r.modelName}"`,
+        r.line,
+        isNaN(r.fbRpm) ? '' : r.fbRpm.toFixed(2),
+        isNaN(r.actualLen) ? '' : r.actualLen.toFixed(2),
+        isNaN(r.ibaLen) ? '' : r.ibaLen.toFixed(2),
+        isNaN(r.ibaErr) ? '' : r.ibaErr.toFixed(2),
+        isNaN(r.predLen) ? '' : r.predLen.toFixed(2),
+        isNaN(r.predErr) ? '' : r.predErr.toFixed(2),
+        isNaN(r.actualMin) ? '' : r.actualMin.toFixed(2)
+      ].join(','));
+
+      // Prepend UTF-8 BOM so Korean characters display properly in Microsoft Excel
+      const csvContent = '\uFEFF' + [headers.join(','), ...rows].join('\n');
+      const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `코일_예측모델_검증결과_${new Date().toISOString().slice(0, 10)}.csv`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      showToast('검증 결과 CSV 파일을 다운로드했습니다.', 'success');
+    }
+
+    // =========================================================================
+    // 8. INITIALIZATION ON PAGE LOAD
+    // =========================================================================
+    window.addEventListener('DOMContentLoaded', () => {
+      initOverviewCharts();
+      updateD12Sim();
+      updateD10Sim();
+      filterD10Table('ALL');
+    });
+  </script>
+</body>
+</html>
