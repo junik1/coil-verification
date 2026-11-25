@@ -741,6 +741,75 @@
     let sessionHistory = [];
 
     // =========================================================================
+    // 2. TOAST, LENGTH SOURCE BADGE & RELIABILITY MODAL UTILITIES
+    // =========================================================================
+    function showToast(message, type = 'info') {
+      const container = document.getElementById('toast-container');
+      if (!container) return;
+      const styles = {
+        success: 'bg-gray-900 text-white border-gray-800',
+        error: 'bg-red-600 text-white border-red-700',
+        info: 'bg-gray-800 text-white border-gray-700'
+      };
+      const el = document.createElement('div');
+      el.className = `pointer-events-auto px-4 py-2.5 rounded-xl shadow-lg border text-xs font-semibold transition-all duration-300 ${styles[type] || styles.info}`;
+      el.textContent = message;
+      container.appendChild(el);
+      setTimeout(() => {
+        el.style.opacity = '0';
+        el.style.transform = 'translateY(6px)';
+        setTimeout(() => el.remove(), 250);
+      }, 2800);
+    }
+
+    function updateLengthSourceBadge(source) {
+      const badge = document.getElementById('length-source-badge');
+      if (!badge) return;
+      if (source === 'actual') {
+        badge.className = 'text-[10px] font-bold px-2 py-0.5 rounded-md bg-emerald-50 text-emerald-700 border border-emerald-200';
+        badge.textContent = '실측치 적용';
+      } else if (source === 'manual') {
+        badge.className = 'text-[10px] font-bold px-2 py-0.5 rounded-md bg-blue-50 text-royal-700 border border-blue-200';
+        badge.textContent = '직접 입력';
+      } else if (source === 'predicted') {
+        badge.className = 'text-[10px] font-bold px-2 py-0.5 rounded-md bg-amber-50 text-amber-800 border border-amber-200';
+        badge.textContent = '예측치 적용';
+      } else {
+        badge.className = 'hidden text-[10px] font-bold px-2 py-0.5 rounded-md';
+        badge.textContent = '';
+      }
+    }
+
+    function openPredFallbackModal(spec, predLen) {
+      const modal = document.getElementById('pred-fallback-modal');
+      if (!modal) return;
+      const isD10 = spec === 'SD500 D10';
+
+      document.getElementById('pred-modal-desc').textContent =
+        `실측 총 길이 데이터가 없어 모델 예측치(${predLen.toFixed(1)}m)를 자동 입력했습니다.`;
+      document.getElementById('pred-modal-model').textContent =
+        isD10 ? 'SD500 D10 (FB-RPM)' : '500N D12 (OGD)';
+      document.getElementById('pred-modal-confidence').textContent =
+        isD10 ? '85.2%' : '85.7%';
+      document.getElementById('pred-modal-conf-basis').textContent =
+        isD10 ? '설명력 R² (상관계수 r = 0.923)' : '±15m 이내 적중률 (최근 7코일)';
+      document.getElementById('pred-modal-conf-sub').textContent =
+        isD10
+          ? '13코일 순차검증 평균 오차 49.21m (중앙값 27.14m · 기존 IBA 대비 -58.9%)'
+          : '평균 오차 9.05m · 전체 18코일 교차검증 기준 적중률 72.2% (평균 오차 18.47m)';
+
+      modal.classList.remove('hidden');
+      modal.classList.add('flex');
+    }
+
+    function closePredFallbackModal() {
+      const modal = document.getElementById('pred-fallback-modal');
+      if (!modal) return;
+      modal.classList.add('hidden');
+      modal.classList.remove('flex');
+    }
+
+    // =========================================================================
     // 3. VIEW NAVIGATION (HOME <-> LENGTH <-> PREDICT)
     // =========================================================================
     function switchView(view) {
