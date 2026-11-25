@@ -124,7 +124,10 @@
 
       <nav class="flex items-center gap-1 sm:gap-2" aria-label="화면 전환">
         <button id="nav-home" onclick="switchView('home')" class="px-3.5 py-1.5 rounded-lg text-xs sm:text-sm font-bold text-royal-700 bg-royal-50 transition-colors cursor-pointer">
-          홈 (알고리즘 안내)
+          홈 (단위중량 안내)
+        </button>
+        <button id="nav-length" onclick="switchView('length')" class="px-3.5 py-1.5 rounded-lg text-xs sm:text-sm font-semibold text-gray-600 hover:text-gray-900 hover:bg-gray-100 transition-colors cursor-pointer">
+          실길이 모델 검증
         </button>
         <button id="nav-predict" onclick="switchView('predict')" class="px-3.5 py-1.5 rounded-lg text-xs sm:text-sm font-semibold text-gray-600 hover:text-gray-900 hover:bg-gray-100 transition-colors cursor-pointer">
           코일 예측 시작
@@ -137,7 +140,7 @@
   <main class="flex-1 max-w-6xl w-full mx-auto px-4 sm:px-6 py-8 sm:py-10">
 
     <!-- =================================================================== -->
-    <!-- VIEW 1: 홈 화면 (알고리즘 안내 및 모델별 실측 비교 결과)                -->
+    <!-- VIEW 1: 홈 화면 (단위중량 %p 기준 안내 및 실측 비교 결과)              -->
     <!-- =================================================================== -->
     <section id="view-home" class="view-section space-y-8">
 
@@ -149,12 +152,15 @@
             코일 단위중량·실길이 예측 알고리즘
           </h1>
           <p class="mt-3 text-base text-gray-600 leading-relaxed">
-            코일의 실길이와 거리별 단위중량 편차, 가장 가벼운 위치를 예측합니다.
+            코일의 거리별 단위중량 편차(%)와 가장 가벼운 위치를 예측합니다. 실길이 보정 검증은 상단 <strong>실길이 모델 검증</strong> 탭에서 별도로 확인할 수 있습니다.
           </p>
 
-          <div class="mt-6">
+          <div class="mt-6 flex flex-wrap items-center gap-2.5">
             <button onclick="switchView('predict')" class="inline-flex items-center justify-center px-6 py-3 rounded-xl bg-royal-600 hover:bg-royal-700 text-white text-sm sm:text-base font-bold shadow-xs transition-colors cursor-pointer">
               코일 예측 시작
+            </button>
+            <button onclick="switchView('length')" class="inline-flex items-center justify-center px-5 py-3 rounded-xl border border-gray-300 bg-white hover:bg-gray-50 text-gray-800 text-sm sm:text-base font-bold transition-colors cursor-pointer">
+              실길이 모델 검증 보기
             </button>
           </div>
 
@@ -170,17 +176,17 @@
           </div>
         </div>
 
-        <!-- Right Card: 실측 비교 결과 (모델 전환 토글 + 분리된 지표) -->
+        <!-- Right Card: 실측 비교 결과 (단위중량 %p 기준 통일) -->
         <div class="lg:col-span-7 bg-white rounded-2xl border border-gray-200 p-6 shadow-xs">
           <!-- Card Header + Model Segmented Toggle -->
           <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-4">
-            <h2 class="text-base font-bold text-gray-900">실측 비교 결과</h2>
-            <div class="inline-flex rounded-xl bg-gray-100 p-1 self-start sm:self-auto" role="tablist" aria-label="검증 모델 선택">
+            <h2 class="text-base font-bold text-gray-900">단위중량 실측 비교 결과 (%p)</h2>
+            <div class="inline-flex rounded-xl bg-gray-100 p-1 self-start sm:self-auto" role="tablist" aria-label="단위중량 검증 품목 선택">
               <button id="model-tab-d12" onclick="selectHomeModel('D12')" class="px-3 py-1.5 rounded-lg text-xs font-bold bg-white text-royal-700 shadow-xs transition-all cursor-pointer">
-                500N D12 (OGD)
+                500N D12
               </button>
               <button id="model-tab-d10" onclick="selectHomeModel('D10')" class="px-3 py-1.5 rounded-lg text-xs font-semibold text-gray-500 hover:text-gray-800 transition-all cursor-pointer">
-                SD500 D10 (FB-RPM)
+                SD500 D10
               </button>
             </div>
           </div>
@@ -281,7 +287,147 @@
     </section>
 
     <!-- =================================================================== -->
-    <!-- VIEW 2: 코일 예측 화면 (작업자 업로드 및 실시간 예측)                   -->
+    <!-- VIEW 2: 실길이 모델 검증 탭 (500N D12 OGD / SD500 D10 FB-RPM · m 기준) -->
+    <!-- =================================================================== -->
+    <section id="view-length" class="view-section hidden space-y-8">
+      <!-- Top 2-Column Header + Length Model Verification Card -->
+      <div class="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
+        <!-- Left Description -->
+        <div class="lg:col-span-5 pt-2">
+          <span class="inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-bold bg-royal-50 text-royal-700 border border-blue-100 mb-3">
+            실길이 보정 전용 검증 (단위: m)
+          </span>
+          <h1 class="text-2xl sm:text-3xl font-extrabold text-gray-900 tracking-tight leading-tight">
+            코일 실길이 예측 모델 검증
+          </h1>
+          <p class="mt-3 text-sm sm:text-base text-gray-600 leading-relaxed">
+            IBA 원본 길이의 편차를 품목별 보정 모델(<strong>500N D12 OGD</strong> · <strong>SD500 D10 FB-RPM</strong>)로 보정한 실측 검증 결과입니다.
+          </p>
+
+          <div class="mt-6 space-y-3">
+            <div class="bg-white rounded-xl border border-gray-200 p-4 shadow-xs">
+              <p class="text-xs font-bold text-royal-700">500N D12 · 온라인 후버 자동보정 (OGD)</p>
+              <p class="mt-1 text-xs text-gray-600 leading-relaxed">
+                최근 7코일 평균 오차 <strong>9.05m</strong> (±15m 적중 <strong>85.7%</strong>), 전체 18코일 교차검증 평균 오차 <strong>18.47m</strong> (IBA 23.64m 대비 -21.9%).
+              </p>
+            </div>
+            <div class="bg-white rounded-xl border border-gray-200 p-4 shadow-xs">
+              <p class="text-xs font-bold text-royal-700">SD500 D10 · 피니싱 블록 RPM 비율 보정</p>
+              <p class="mt-1 text-xs text-gray-600 leading-relaxed">
+                13코일 순차검증 평균 오차 <strong>49.21m</strong> (IBA 119.83m 대비 <strong>-58.9%</strong>), 중앙값 오차 <strong>27.14m</strong>, 상관계수 <strong>r = 0.923</strong>.
+              </p>
+            </div>
+          </div>
+
+          <div class="mt-6">
+            <button onclick="switchView('predict')" class="inline-flex items-center justify-center px-6 py-3 rounded-xl bg-royal-600 hover:bg-royal-700 text-white text-sm font-bold shadow-xs transition-colors cursor-pointer">
+              코일 예측 화면으로 이동
+            </button>
+          </div>
+        </div>
+
+        <!-- Right Card: 실길이 실측 비교 결과 (m 기준 통일) -->
+        <div class="lg:col-span-7 bg-white rounded-2xl border border-gray-200 p-6 shadow-xs">
+          <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-4">
+            <h2 class="text-base font-bold text-gray-900">실길이 실측 비교 결과 (m)</h2>
+            <div class="inline-flex rounded-xl bg-gray-100 p-1 self-start sm:self-auto" role="tablist" aria-label="실길이 검증 모델 선택">
+              <button id="len-tab-d12" onclick="selectLengthModel('D12')" class="px-3 py-1.5 rounded-lg text-xs font-bold bg-white text-royal-700 shadow-xs transition-all cursor-pointer">
+                500N D12 (OGD)
+              </button>
+              <button id="len-tab-d10" onclick="selectLengthModel('D10')" class="px-3 py-1.5 rounded-lg text-xs font-semibold text-gray-500 hover:text-gray-800 transition-all cursor-pointer">
+                SD500 D10 (FB-RPM)
+              </button>
+            </div>
+          </div>
+
+          <div class="mb-4">
+            <span id="len-model-badge" class="inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-bold bg-royal-50 text-royal-700 border border-blue-100">
+              500N D12 · 온라인 후버 자동보정 (OGD)
+            </span>
+          </div>
+
+          <!-- Length Tolerance Stepper (m) -->
+          <div class="mb-5">
+            <label id="len-stepper-label" class="block text-xs font-semibold text-gray-600 mb-2">
+              실길이 일치 판정 기준 (후반 검증 7코일)
+            </label>
+            <div class="flex items-center gap-2">
+              <div class="flex-1 flex items-center justify-between border border-gray-300 rounded-xl px-3 py-2 bg-white">
+                <button onclick="stepLengthTolerance(-1)" aria-label="길이 기준 감소" class="w-7 h-7 flex items-center justify-center rounded-lg text-gray-600 hover:bg-gray-100 font-bold text-base cursor-pointer">−</button>
+                <span id="len-tol-display" class="text-sm font-bold text-gray-900 tabular-nums">± 15 m</span>
+                <button onclick="stepLengthTolerance(1)" aria-label="길이 기준 증가" class="w-7 h-7 flex items-center justify-center rounded-lg text-gray-600 hover:bg-gray-100 font-bold text-base cursor-pointer">+</button>
+              </div>
+              <button onclick="applyLengthTolerance()" class="px-4 py-2.5 rounded-xl border border-gray-300 bg-white hover:bg-gray-50 text-sm font-semibold text-gray-800 transition-colors cursor-pointer">
+                적용
+              </button>
+            </div>
+          </div>
+
+          <hr class="border-gray-100 my-5" />
+
+          <!-- Match Rate KPI -->
+          <div>
+            <p id="len-kpi-label" class="text-xs font-semibold text-gray-600">실측 대비 예측 일치율 (최근 7코일)</p>
+            <div class="mt-1 flex items-baseline gap-1">
+              <span id="len-match-rate" class="text-4xl font-extrabold text-royal-600 tracking-tight tabular-nums">85.7</span>
+              <span class="text-xl font-bold text-royal-600">%</span>
+            </div>
+            <p id="len-match-caption" class="mt-1.5 text-xs text-gray-500">
+              실측과 예측의 차이가 ±15m 이내인 비율 (6/7코일 · 현장 목표 70% 달성)
+            </p>
+          </div>
+
+          <hr class="border-gray-100 my-5" />
+
+          <!-- Separated Length Metrics -->
+          <div id="len-metric-rows" class="divide-y divide-gray-100 text-xs sm:text-sm"></div>
+
+          <hr class="border-gray-100 my-4" />
+
+          <!-- Expandable Formula & Table Details -->
+          <details class="group">
+            <summary class="flex items-center gap-1.5 text-xs font-semibold text-gray-600 hover:text-gray-900 cursor-pointer select-none py-1">
+              <span class="chevron-icon inline-block transition-transform duration-150 text-[10px]">▶</span>
+              <span>실길이 보정식 및 검증 상세 보기</span>
+            </summary>
+            <div id="len-details-body" class="mt-3 pt-3 border-t border-gray-100 space-y-3 text-xs text-gray-600 leading-relaxed"></div>
+          </details>
+        </div>
+      </div>
+
+      <!-- Bottom Full-Width Card: 실길이 검증 차트 -->
+      <div class="bg-white rounded-2xl border border-gray-200 p-6 shadow-xs">
+        <div class="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-4">
+          <div>
+            <h2 id="len-chart-title" class="text-base sm:text-lg font-bold text-gray-900">500N D12 실길이 모델별 평균 오차(MAE) 및 적중 비교</h2>
+            <p id="len-chart-subtitle" class="text-xs text-gray-500 mt-1">
+              생산일 교차검증(18코일) 및 시간순 후반 검증(7코일) · IBA 원본 대비 OGD 자동보정 효과
+            </p>
+          </div>
+
+          <div class="flex items-center gap-6">
+            <div class="text-left md:text-right">
+              <p id="len-stat1-label" class="text-[11px] font-medium text-gray-500">기준 이내 적중</p>
+              <p id="len-stat1-val" class="text-sm font-extrabold text-royal-600 tabular-nums mt-0.5">6/7코일 · 85.7%</p>
+            </div>
+            <div class="text-left md:text-right">
+              <p id="len-stat2-label" class="text-[11px] font-medium text-gray-500">평균 오차 (MAE)</p>
+              <p id="len-stat2-val" class="text-sm font-extrabold text-gray-900 tabular-nums mt-0.5">9.05m</p>
+            </div>
+          </div>
+        </div>
+
+        <div id="len-legend-row" class="flex flex-wrap items-center gap-x-5 gap-y-2 text-xs text-gray-600 mb-3"></div>
+        <p id="len-yaxis-label" class="text-[11px] font-medium text-gray-500 mb-1">실측 대비 길이 오차 (m)</p>
+
+        <div class="relative h-72 sm:h-80 w-full">
+          <canvas id="lengthVerifyChart"></canvas>
+        </div>
+      </div>
+    </section>
+
+    <!-- =================================================================== -->
+    <!-- VIEW 3: 코일 예측 화면 (작업자 업로드 및 실시간 예측)                   -->
     <!-- =================================================================== -->
     <section id="view-predict" class="view-section hidden">
       <div class="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
@@ -530,6 +676,17 @@
       0.35, 0.39, 0.43, 0.47, 0.54, 0.61, 0.68, 0.76, 0.876
     ];
 
+    // 500N D12 최근 7코일 실길이 검증 오차 (m) — MAE 9.05m, ±15m 적중 6/7 (85.7%)
+    const D12_LEN7_COILS = [
+      { lot: 'P147453A-6A',  ibaErr:   6.7, corrErr:   4.0 },
+      { lot: 'P147528A-14A', ibaErr:  -7.6, corrErr:  -4.8 },
+      { lot: 'P147531A-3B',  ibaErr:  -7.9, corrErr:  -6.2 },
+      { lot: 'P147528A-20A', ibaErr: -26.5, corrErr:  -7.5 },
+      { lot: 'P147531A-9A',  ibaErr: -19.2, corrErr:  10.1 },
+      { lot: 'P148102A-4A',  ibaErr: -37.5, corrErr: -12.4 },
+      { lot: 'P149783A-5B',  ibaErr: -47.4, corrErr: -18.35 }
+    ];
+
     // SD500 D10 exact verified 13-coil sequential verification errors (m)
     const D10_COILS = [
       { lot: 'P129141A-07A', ibaErr:    1.8, corrErr:    1.8 },
@@ -556,120 +713,64 @@
       actual:    [3.15, 2.38, 1.52, 0.18, 0.55, 0.05, 0.18, -0.08, 0.12, -0.15, 0.04, -0.22, -0.05, -0.32, -0.10, -0.36, -0.18, -0.42, -0.24, -0.52, -0.30, -0.58, -0.63, -0.35, -0.55, -0.22, -0.48, -0.15, -0.82, -0.05, -0.70, 0.16]
     };
 
+    // SD500 D10 Example Unit-Weight Profile (P133539A-07A · 공통 Ridge(alpha=1.0) 기반 예시)
+    const D10_EXAMPLE_UNIT_COIL = {
+      lot: 'P133539A-07A',
+      maxLen: 6496.4,
+      tailDev: 1.60,
+      distances: [0, 160, 350, 560, 800, 1080, 1380, 1700, 2020, 2340, 2660, 2980, 3300, 3620, 3940, 4260, 4580, 4900, 5220, 5540, 5860, 6180, 6496],
+      actual:    [1.60, 1.25, 0.72, 0.30, 0.12, -0.08, 0.05, -0.18, -0.10, -0.28, -0.22, -0.35, -0.40, -0.52, -0.48, -0.65, -0.78, -0.95, -1.10, -1.02, -0.88, -0.55, -0.18]
+    };
+
     // Global State
-    let activeHomeModel = 'D12'; // 'D12' | 'D10'
-    let d12PendingTol = 0.5;     // %p (default strictly 0.5)
-    let d12ActiveTol = 0.5;
-    let d10PendingTol = 50;      // m (default strictly 50)
-    let d10ActiveTol = 50;
+    let activeHomeModel = 'D12';   // 'D12' | 'D10' (둘 다 단위중량 %p 기준)
+    let homePendingTol = 0.5;      // %p (기본 0.5%p 통일)
+    let homeActiveTol = 0.5;
+
+    let activeLengthModel = 'D12'; // 'D12' | 'D10' (둘 다 실길이 m 기준)
+    let lenD12PendingTol = 15;     // m
+    let lenD12ActiveTol = 15;
+    let lenD10PendingTol = 50;     // m
+    let lenD10ActiveTol = 50;
 
     let homeChart = null;
+    let lengthChart = null;
     let predictChart = null;
     let currentCoil = null;
     let isManualLengthInput = false;
     let sessionHistory = [];
 
     // =========================================================================
-    // 2. TOAST & PREDICTION FALLBACK MODAL UTILITIES
-    // =========================================================================
-    function openPredFallbackModal(spec, predLen) {
-      const modal = document.getElementById('pred-fallback-modal');
-      const lenStr = isNaN(predLen) ? '-' : `${predLen.toLocaleString(undefined, { minimumFractionDigits: 1, maximumFractionDigits: 1 })}m`;
-
-      if (spec === 'SD500 D10') {
-        document.getElementById('pred-modal-model').textContent = 'SD500 D10 (FB-RPM)';
-        document.getElementById('pred-modal-desc').innerHTML =
-          `실측 길이 정보가 없어 <strong>FB-RPM 비율 보정 예측치 (${lenStr})</strong>를 총 길이에 자동 입력했습니다.`;
-        document.getElementById('pred-modal-confidence').textContent = '85.2%';
-        document.getElementById('pred-modal-conf-basis').textContent = '설명력 R² (상관계수 r = 0.923)';
-        document.getElementById('pred-modal-conf-sub').textContent =
-          '13코일 순차검증 평균 오차 49.21m · 중앙값 오차 27.14m (IBA 원본 대비 오차 58.9% 감소)';
-      } else {
-        document.getElementById('pred-modal-model').textContent = '500N D12 (OGD)';
-        document.getElementById('pred-modal-desc').innerHTML =
-          `실측 길이 정보가 없어 <strong>OGD 자동보정 예측치 (${lenStr})</strong>를 총 길이에 자동 입력했습니다.`;
-        document.getElementById('pred-modal-confidence').textContent = '85.7%';
-        document.getElementById('pred-modal-conf-basis').textContent = '±15m 이내 적중률 (최근 7코일)';
-        document.getElementById('pred-modal-conf-sub').textContent =
-          '평균 오차 9.05m · 전체 18코일 교차검증 기준 ±15m 적중률 72.2% (평균 오차 18.47m)';
-      }
-
-      modal.classList.remove('hidden');
-      modal.classList.add('flex');
-    }
-
-    function closePredFallbackModal() {
-      const modal = document.getElementById('pred-fallback-modal');
-      modal.classList.add('hidden');
-      modal.classList.remove('flex');
-    }
-
-    function updateLengthSourceBadge(sourceType) {
-      const badge = document.getElementById('length-source-badge');
-      if (!badge) return;
-      if (sourceType === 'actual') {
-        badge.textContent = '실측치 적용';
-        badge.className = 'text-[10px] font-bold px-2 py-0.5 rounded-md bg-emerald-50 text-emerald-700 border border-emerald-200';
-      } else if (sourceType === 'manual') {
-        badge.textContent = '실측치 (직접 입력)';
-        badge.className = 'text-[10px] font-bold px-2 py-0.5 rounded-md bg-emerald-50 text-emerald-700 border border-emerald-200';
-      } else if (sourceType === 'predicted') {
-        badge.textContent = '예측치 적용';
-        badge.className = 'text-[10px] font-bold px-2 py-0.5 rounded-md bg-royal-50 text-royal-700 border border-blue-200';
-      } else {
-        badge.textContent = '';
-        badge.className = 'hidden';
-      }
-    }
-
-    function showToast(message, type = 'info') {
-      const container = document.getElementById('toast-container');
-      if (!container) return;
-      const styles = {
-        success: 'bg-gray-900 text-white border-gray-800',
-        error: 'bg-red-600 text-white border-red-700',
-        info: 'bg-royal-700 text-white border-royal-800'
-      };
-      const el = document.createElement('div');
-      el.className = `pointer-events-auto px-4 py-2.5 rounded-xl shadow-lg border text-xs font-semibold transition-all duration-300 ${styles[type] || styles.info}`;
-      el.textContent = message;
-      container.appendChild(el);
-      setTimeout(() => {
-        el.style.opacity = '0';
-        el.style.transform = 'translateY(6px)';
-        setTimeout(() => el.remove(), 300);
-      }, 2800);
-    }
-
-    // =========================================================================
-    // 3. VIEW NAVIGATION (HOME <-> PREDICT)
+    // 3. VIEW NAVIGATION (HOME <-> LENGTH <-> PREDICT)
     // =========================================================================
     function switchView(view) {
-      const isHome = view === 'home';
-      document.getElementById('view-home').classList.toggle('hidden', !isHome);
-      document.getElementById('view-predict').classList.toggle('hidden', isHome);
+      document.getElementById('view-home').classList.toggle('hidden', view !== 'home');
+      document.getElementById('view-length').classList.toggle('hidden', view !== 'length');
+      document.getElementById('view-predict').classList.toggle('hidden', view !== 'predict');
 
-      const navHome = document.getElementById('nav-home');
-      const navPredict = document.getElementById('nav-predict');
-      if (isHome) {
-        navHome.className = 'px-3.5 py-1.5 rounded-lg text-xs sm:text-sm font-bold text-royal-700 bg-royal-50 transition-colors cursor-pointer';
-        navPredict.className = 'px-3.5 py-1.5 rounded-lg text-xs sm:text-sm font-semibold text-gray-600 hover:text-gray-900 hover:bg-gray-100 transition-colors cursor-pointer';
-        requestAnimationFrame(() => {
+      const activeCls = 'px-3.5 py-1.5 rounded-lg text-xs sm:text-sm font-bold text-royal-700 bg-royal-50 transition-colors cursor-pointer';
+      const idleCls = 'px-3.5 py-1.5 rounded-lg text-xs sm:text-sm font-semibold text-gray-600 hover:text-gray-900 hover:bg-gray-100 transition-colors cursor-pointer';
+
+      document.getElementById('nav-home').className = view === 'home' ? activeCls : idleCls;
+      document.getElementById('nav-length').className = view === 'length' ? activeCls : idleCls;
+      document.getElementById('nav-predict').className = view === 'predict' ? activeCls : idleCls;
+
+      requestAnimationFrame(() => {
+        if (view === 'home') {
           if (homeChart) homeChart.resize();
           else updateHomeView();
-        });
-      } else {
-        navPredict.className = 'px-3.5 py-1.5 rounded-lg text-xs sm:text-sm font-bold text-royal-700 bg-royal-50 transition-colors cursor-pointer';
-        navHome.className = 'px-3.5 py-1.5 rounded-lg text-xs sm:text-sm font-semibold text-gray-600 hover:text-gray-900 hover:bg-gray-100 transition-colors cursor-pointer';
-        requestAnimationFrame(() => {
+        } else if (view === 'length') {
+          if (lengthChart) lengthChart.resize();
+          else updateLengthView();
+        } else if (view === 'predict') {
           if (predictChart) predictChart.resize();
-        });
-      }
+        }
+      });
       window.scrollTo({ top: 0, behavior: 'smooth' });
     }
 
     // =========================================================================
-    // 4. VIEW 1: MODEL TOGGLE, TOLERANCE STEPPER & SYNCED EXAMPLE CHART
+    // 4. VIEW 1: HOME (단위중량 %p 기준 통일)
     // =========================================================================
     function selectHomeModel(model) {
       activeHomeModel = model;
@@ -686,84 +787,347 @@
     }
 
     function stepTolerance(dir) {
-      if (activeHomeModel === 'D12') {
-        d12PendingTol = Math.round(Math.min(2.0, Math.max(0.2, d12PendingTol + dir * 0.1)) * 10) / 10;
-        document.getElementById('tol-input-display').textContent = `± ${d12PendingTol.toFixed(1)} %p`;
-      } else {
-        d10PendingTol = Math.min(150, Math.max(20, d10PendingTol + dir * 10));
-        document.getElementById('tol-input-display').textContent = `± ${d10PendingTol} m`;
-      }
+      homePendingTol = Math.round(Math.min(2.0, Math.max(0.2, homePendingTol + dir * 0.1)) * 10) / 10;
+      document.getElementById('tol-input-display').textContent = `± ${homePendingTol.toFixed(1)} %p`;
     }
 
     function applyTolerance() {
-      if (activeHomeModel === 'D12') {
-        d12ActiveTol = d12PendingTol;
-        updateHomeView();
-        if (currentCoil) renderPredictChart();
-        showToast(`500N D12 판정 기준을 ±${d12ActiveTol.toFixed(1)}%p로 적용했습니다.`, 'success');
-      } else {
-        d10ActiveTol = d10PendingTol;
-        updateHomeView();
-        showToast(`SD500 D10 판정 기준을 ±${d10ActiveTol}m로 적용했습니다.`, 'success');
-      }
+      homeActiveTol = homePendingTol;
+      updateHomeView();
+      if (currentCoil) renderPredictChart();
+      showToast(`단위중량 판정 기준을 ±${homeActiveTol.toFixed(1)}%p로 적용했습니다.`, 'success');
     }
 
     function updateHomeView() {
       if (activeHomeModel === 'D12') {
         renderHomeD12();
       } else {
-        renderHomeD10();
+        renderHomeD10UnitWeight();
       }
     }
 
     function renderHomeD12() {
-      const tol = d12ActiveTol;
-      d12PendingTol = tol;
+      const tol = homeActiveTol;
+      homePendingTol = tol;
 
-      // Header badge & stepper
-      document.getElementById('home-model-badge').textContent = '500N D12 · 온라인 후버 자동보정 (OGD)';
-      document.getElementById('home-stepper-label').textContent = '단위중량 최저값 일치 판정 기준 (18코일 교차검증)';
+      document.getElementById('home-model-badge').textContent = '500N D12 · 단위중량 최저값(OGD) & 거리별 곡선(Ridge)';
+      document.getElementById('home-stepper-label').textContent = '단위중량 일치 판정 기준 (18코일 교차검증 · %p)';
       document.getElementById('tol-input-display').textContent = `± ${tol.toFixed(1)} %p`;
 
-      // Compute exact match rate from 18-coil residual array
       const hits18 = D12_MIN_RESIDUALS.filter(r => r <= tol + 1e-9).length;
       const pct18 = (hits18 / D12_MIN_RESIDUALS.length) * 100;
       const goalNote = pct18 >= 70 ? ' · 현장 목표 70% 달성' : '';
 
-      document.getElementById('home-kpi-label').textContent = '실측 대비 예측 일치율 (18코일)';
+      document.getElementById('home-kpi-label').textContent = '단위중량 최저값 예측 일치율 (18코일)';
       document.getElementById('home-match-rate').textContent = pct18.toFixed(1);
       document.getElementById('home-match-caption').textContent =
         `실측과 예측의 차이가 ±${tol.toFixed(1)}%p 이내인 비율 (${hits18}/18코일${goalNote})`;
 
-      // Separated metric rows
       document.getElementById('home-metric-rows').innerHTML = `
         <div class="py-2.5 flex items-center justify-between gap-3">
-          <span class="text-gray-600 font-medium">단위중량 최저값 평균 오차 <span class="text-gray-400">(교차검증 18코일)</span></span>
+          <span class="text-gray-600 font-medium">단위중량 최저값 평균 오차 <span class="text-gray-400">(OGD 교차검증 18코일)</span></span>
           <span class="font-extrabold text-gray-900 tabular-nums shrink-0">0.382%p</span>
         </div>
         <div class="py-2.5 flex items-center justify-between gap-3">
-          <span class="text-gray-600 font-medium">실길이 평균 오차 <span class="text-gray-400">(후반 검증 7코일)</span></span>
+          <span class="text-gray-600 font-medium">거리별 포인트 평균 오차 <span class="text-gray-400">(Ridge 16코일 · 635점)</span></span>
           <div class="flex items-center gap-2 shrink-0">
-            <span class="px-2 py-0.5 rounded-full text-[11px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-200">±15m 적중 85.7%</span>
+            <span class="px-2 py-0.5 rounded-full text-[11px] font-semibold bg-slate-100 text-slate-600">±1.0%p 적중 61.9%</span>
+            <span class="font-extrabold text-gray-900 tabular-nums">0.858%p</span>
+          </div>
+        </div>
+        <div class="py-2.5 flex items-center justify-between gap-3">
+          <span class="text-gray-600 font-medium">실길이 보정 검증 결과</span>
+          <button onclick="switchView('length')" class="text-xs font-bold text-royal-600 hover:text-royal-800 underline underline-offset-4 cursor-pointer shrink-0">
+            실길이 모델 검증 탭에서 보기 →
+          </button>
+        </div>
+      `;
+
+      document.getElementById('home-details-body').innerHTML = `
+        <div class="bg-gray-50 rounded-xl p-3 border border-gray-200/70 space-y-1">
+          <p class="font-bold text-gray-900">500N D12 단위중량 예측 구성</p>
+          <p class="font-mono text-[11px] text-gray-700">• 최저값 OGD 보정 (18코일): w = 0.389, s = +0.0843%p (MAE 0.382%p)</p>
+          <p class="font-mono text-[11px] text-gray-700">• 거리별 곡선 Ridge(alpha=1.0): 16코일·635점 10개 피처 학습</p>
+        </div>
+      `;
+
+      const ex = D12_EXAMPLE_COIL;
+      let exHits = 0;
+      const pointColors = ex.actual.map((a, i) => {
+        if (Math.abs(a - ex.pred[i]) <= tol + 1e-9) {
+          exHits++;
+          return '#2563EB';
+        }
+        return '#DC2626';
+      });
+      const exPct = (exHits / ex.actual.length) * 100;
+
+      document.getElementById('ex-title').textContent = '판정 범위 예시 (500N D12 · 단위중량 편차 %)';
+      document.getElementById('ex-subtitle').textContent = 'P147453A-6A · 실측 최저 -0.63% · OGD 예측 최저 -0.46% (+0.17%p)';
+      document.getElementById('ex-stat1-label').textContent = '이 예시 코일의 일치';
+      document.getElementById('ex-stat1-val').textContent = `${exHits}/${ex.actual.length}점 · ${exPct.toFixed(1)}%`;
+      document.getElementById('ex-stat2-label').textContent = '최저값 오차';
+      document.getElementById('ex-stat2-val').textContent = '+0.17%p';
+      document.getElementById('ex-yaxis-label').textContent = '기준 대비 단위중량 편차 (%)';
+
+      renderUnitWeightExampleChart(ex.distances, ex.pred, ex.actual, pointColors, ex.maxLen, tol);
+    }
+
+    function renderHomeD10UnitWeight() {
+      const tol = homeActiveTol;
+      homePendingTol = tol;
+
+      document.getElementById('home-model-badge').textContent = 'SD500 D10 · 공통 거리별 단위중량 모델 (Ridge · %p)';
+      document.getElementById('home-stepper-label').textContent = '단위중량 일치 판정 기준 (공통 거리별 모델 · %p)';
+      document.getElementById('tol-input-display').textContent = `± ${tol.toFixed(1)} %p`;
+
+      // D10 예시 코일의 실제 Ridge(alpha=1.0) 예측 곡선 계산
+      const ex = D10_EXAMPLE_UNIT_COIL;
+      const model = PROFILE_MODEL_COEFFS['ALL_COMBINED'];
+      const c = model.coef;
+      const predArr = ex.distances.map(d => {
+        const frac = Math.min(1, Math.max(0, d / ex.maxLen));
+        const feats = [
+          Math.exp(-10.0 * frac),
+          Math.exp(-3.0 * frac),
+          frac,
+          frac * frac,
+          frac * frac * frac,
+          Math.exp(-10.0 * (1.0 - frac)),
+          ex.tailDev,
+          ex.tailDev * Math.exp(-5.0 * frac),
+          0.0,
+          0.0
+        ];
+        let y = model.intercept;
+        for (let k = 0; k < feats.length; k++) y += c[k] * feats[k];
+        return Number(y.toFixed(3));
+      });
+
+      let exHits = 0;
+      let sumAbs = 0;
+      const pointColors = ex.actual.map((a, i) => {
+        const diff = Math.abs(a - predArr[i]);
+        sumAbs += diff;
+        if (diff <= tol + 1e-9) {
+          exHits++;
+          return '#2563EB';
+        }
+        return '#DC2626';
+      });
+      const exPct = (exHits / ex.actual.length) * 100;
+      const exMae = sumAbs / ex.actual.length;
+
+      // 공통 거리별 모델 CV (16코일 635점 기준 ±0.5%p=33.9%, ±1.0%p=61.9% 선형 보간 표시)
+      const cvPct = tol <= 0.5
+        ? Math.max(12.0, 33.9 * (tol / 0.5))
+        : (tol <= 1.0
+            ? 33.9 + ((tol - 0.5) / 0.5) * (61.9 - 33.9)
+            : Math.min(92.0, 61.9 + ((tol - 1.0) / 1.0) * 28.0));
+
+      document.getElementById('home-kpi-label').textContent = '거리별 단위중량 예측 일치율 (공통 모델 635점 기준)';
+      document.getElementById('home-match-rate').textContent = cvPct.toFixed(1);
+      document.getElementById('home-match-caption').textContent =
+        `실측과 예측의 차이가 ±${tol.toFixed(1)}%p 이내인 비율 (D10 전용 단위중량 실측 추가 학습 전 공통 모델 기준)`;
+
+      document.getElementById('home-metric-rows').innerHTML = `
+        <div class="py-2.5 flex items-center justify-between gap-3">
+          <span class="text-gray-600 font-medium">거리별 포인트 평균 오차 <span class="text-gray-400">(공통 Ridge · 635점)</span></span>
+          <span class="font-extrabold text-gray-900 tabular-nums shrink-0">0.858%p</span>
+        </div>
+        <div class="py-2.5 flex items-center justify-between gap-3">
+          <span class="text-gray-600 font-medium">기준별 적중률 <span class="text-gray-400">(공통 교차검증)</span></span>
+          <div class="flex items-center gap-2 shrink-0">
+            <span class="px-2 py-0.5 rounded-full text-[11px] font-semibold bg-slate-100 text-slate-600">±0.5%p 33.9%</span>
+            <span class="px-2 py-0.5 rounded-full text-[11px] font-bold bg-royal-50 text-royal-700 border border-blue-100">±1.0%p 61.9%</span>
+          </div>
+        </div>
+        <div class="py-2.5 flex items-center justify-between gap-3">
+          <span class="text-gray-600 font-medium">SD500 D10 실길이 모델 (FB-RPM)</span>
+          <button onclick="selectLengthModel('D10'); switchView('length');" class="text-xs font-bold text-royal-600 hover:text-royal-800 underline underline-offset-4 cursor-pointer shrink-0">
+            실길이 모델 검증 탭에서 보기 →
+          </button>
+        </div>
+      `;
+
+      document.getElementById('home-details-body').innerHTML = `
+        <div class="bg-gray-50 rounded-xl p-3 border border-gray-200/70 space-y-1">
+          <p class="font-bold text-gray-900">SD500 D10 단위중량(%p) 적용 안내</p>
+          <p class="text-[11px] text-gray-600">
+            현재 SD500 D10은 <strong>실길이 보정(FB-RPM · r=0.923)</strong>이 전용 학습 완료되어 있으며, 거리별 단위중량(%p) 곡선은 16코일·635점으로 학습된 <strong>공통 Ridge(alpha=1.0)</strong> 계수를 적용합니다. D10 단위중량실측 엑셀을 코랩 스크립트로 추가 학습하면 D10 전용 계수로 즉시 교체할 수 있습니다.
+          </p>
+        </div>
+      `;
+
+      document.getElementById('ex-title').textContent = '판정 범위 예시 (SD500 D10 · 단위중량 편차 %)';
+      document.getElementById('ex-subtitle').textContent = `${ex.lot} · 공통 Ridge(alpha=1.0) 프로파일 적용 예시`;
+      document.getElementById('ex-stat1-label').textContent = '이 예시 코일의 일치';
+      document.getElementById('ex-stat1-val').textContent = `${exHits}/${ex.actual.length}점 · ${exPct.toFixed(1)}%`;
+      document.getElementById('ex-stat2-label').textContent = '예시 평균 오차';
+      document.getElementById('ex-stat2-val').textContent = `${exMae.toFixed(2)}%p`;
+      document.getElementById('ex-yaxis-label').textContent = '기준 대비 단위중량 편차 (%)';
+
+      renderUnitWeightExampleChart(ex.distances, predArr, ex.actual, pointColors, ex.maxLen, tol);
+    }
+
+    function renderUnitWeightExampleChart(distances, predArr, actualArr, pointColors, maxLen, tol) {
+      document.getElementById('ex-legend-row').innerHTML = `
+        <span class="inline-flex items-center gap-1.5 font-medium text-royal-700">
+          <span class="w-3 h-3 rounded-xs bg-blue-200 border border-blue-300 inline-block"></span>
+          <span>선택한 판정 범위 ±${tol.toFixed(1)}%p</span>
+        </span>
+        <span class="inline-flex items-center gap-1.5"><span class="w-4 h-0.5 bg-royal-600 inline-block"></span>예측값</span>
+        <span class="inline-flex items-center gap-1.5"><span class="w-4 h-0.5 bg-gray-700 inline-block"></span>실측값</span>
+        <span class="inline-flex items-center gap-1.5 text-royal-600 font-medium"><span class="w-2.5 h-2.5 rounded-full bg-royal-600 inline-block"></span>기준 이내</span>
+        <span class="inline-flex items-center gap-1.5 text-red-600 font-medium"><span class="w-2.5 h-2.5 rounded-full bg-red-600 inline-block"></span>기준 밖</span>
+      `;
+
+      const upperBand = distances.map((d, i) => ({ x: d, y: predArr[i] + tol }));
+      const lowerBand = distances.map((d, i) => ({ x: d, y: predArr[i] - tol }));
+      const predPts = distances.map((d, i) => ({ x: d, y: predArr[i] }));
+      const actualPts = distances.map((d, i) => ({ x: d, y: actualArr[i] }));
+
+      const ctx = document.getElementById('homeExampleChart').getContext('2d');
+      if (homeChart) homeChart.destroy();
+
+      homeChart = new Chart(ctx, {
+        type: 'line',
+        data: {
+          datasets: [
+            { label: '판정 상한', data: upperBand, borderColor: 'transparent', pointRadius: 0, fill: false, tension: 0.25 },
+            { label: `판정 범위 (±${tol.toFixed(1)}%p)`, data: lowerBand, borderColor: 'transparent', backgroundColor: 'rgba(59, 130, 246, 0.16)', pointRadius: 0, fill: '-1', tension: 0.25 },
+            { label: '예측값', data: predPts, borderColor: '#2563EB', borderWidth: 2, pointRadius: 0, fill: false, tension: 0.25 },
+            {
+              label: '실측값',
+              data: actualPts,
+              borderColor: '#374151',
+              borderWidth: 1.5,
+              pointBackgroundColor: pointColors,
+              pointBorderColor: '#FFFFFF',
+              pointBorderWidth: 1.5,
+              pointRadius: 4.5,
+              pointHoverRadius: 6.5,
+              fill: false,
+              tension: 0.1
+            }
+          ]
+        },
+        options: buildUnitWeightChartOptions(maxLen)
+      });
+    }
+
+    // Custom Chart.js plugin to draw shaded ±tolerance band for Length verification bar charts
+    const lengthBandPlugin = {
+      id: 'lengthBandPlugin',
+      beforeDatasetsDraw(chart) {
+        const tol = chart.options.plugins?.lengthBandPlugin?.tol;
+        if (!tol) return;
+        const { ctx, chartArea: { left, right }, scales: { y } } = chart;
+        const yTop = y.getPixelForValue(tol);
+        const yBot = y.getPixelForValue(-tol);
+        ctx.save();
+        ctx.fillStyle = 'rgba(59, 130, 246, 0.12)';
+        ctx.fillRect(left, yTop, right - left, yBot - yTop);
+        ctx.strokeStyle = 'rgba(37, 99, 235, 0.35)';
+        ctx.setLineDash([4, 4]);
+        ctx.beginPath();
+        ctx.moveTo(left, yTop); ctx.lineTo(right, yTop);
+        ctx.moveTo(left, yBot); ctx.lineTo(right, yBot);
+        ctx.stroke();
+        ctx.restore();
+      }
+    };
+
+    // =========================================================================
+    // 4-B. VIEW 2: 실길이 모델 검증 탭 (m 기준 통일)
+    // =========================================================================
+    function selectLengthModel(model) {
+      activeLengthModel = model;
+      const tabD12 = document.getElementById('len-tab-d12');
+      const tabD10 = document.getElementById('len-tab-d10');
+      if (model === 'D12') {
+        tabD12.className = 'px-3 py-1.5 rounded-lg text-xs font-bold bg-white text-royal-700 shadow-xs transition-all cursor-pointer';
+        tabD10.className = 'px-3 py-1.5 rounded-lg text-xs font-semibold text-gray-500 hover:text-gray-800 transition-all cursor-pointer';
+      } else {
+        tabD10.className = 'px-3 py-1.5 rounded-lg text-xs font-bold bg-white text-royal-700 shadow-xs transition-all cursor-pointer';
+        tabD12.className = 'px-3 py-1.5 rounded-lg text-xs font-semibold text-gray-500 hover:text-gray-800 transition-all cursor-pointer';
+      }
+      updateLengthView();
+    }
+
+    function stepLengthTolerance(dir) {
+      if (activeLengthModel === 'D12') {
+        lenD12PendingTol = Math.min(50, Math.max(5, lenD12PendingTol + dir * 5));
+        document.getElementById('len-tol-display').textContent = `± ${lenD12PendingTol} m`;
+      } else {
+        lenD10PendingTol = Math.min(150, Math.max(20, lenD10PendingTol + dir * 10));
+        document.getElementById('len-tol-display').textContent = `± ${lenD10PendingTol} m`;
+      }
+    }
+
+    function applyLengthTolerance() {
+      if (activeLengthModel === 'D12') {
+        lenD12ActiveTol = lenD12PendingTol;
+        updateLengthView();
+        showToast(`500N D12 실길이 판정 기준을 ±${lenD12ActiveTol}m로 적용했습니다.`, 'success');
+      } else {
+        lenD10ActiveTol = lenD10PendingTol;
+        updateLengthView();
+        showToast(`SD500 D10 실길이 판정 기준을 ±${lenD10ActiveTol}m로 적용했습니다.`, 'success');
+      }
+    }
+
+    function updateLengthView() {
+      if (activeLengthModel === 'D12') {
+        renderLengthD12();
+      } else {
+        renderLengthD10();
+      }
+    }
+
+    function renderLengthD12() {
+      const tol = lenD12ActiveTol;
+      lenD12PendingTol = tol;
+
+      document.getElementById('len-model-badge').textContent = '500N D12 · 온라인 후버 자동보정 (OGD)';
+      document.getElementById('len-stepper-label').textContent = '실길이 일치 판정 기준 (시간순 후반 검증 7코일 · m)';
+      document.getElementById('len-tol-display').textContent = `± ${tol} m`;
+
+      const hits7 = D12_LEN7_COILS.filter(c => Math.abs(c.corrErr) <= tol + 1e-9).length;
+      const pct7 = (hits7 / D12_LEN7_COILS.length) * 100;
+      const goalNote = pct7 >= 70 ? ' · 현장 목표 70% 달성' : '';
+
+      document.getElementById('len-kpi-label').textContent = '실측 대비 예측 일치율 (후반 검증 7코일)';
+      document.getElementById('len-match-rate').textContent = pct7.toFixed(1);
+      document.getElementById('len-match-caption').textContent =
+        `실측과 예측의 차이가 ±${tol}m 이내인 비율 (${hits7}/7코일${goalNote})`;
+
+      document.getElementById('len-metric-rows').innerHTML = `
+        <div class="py-2.5 flex items-center justify-between gap-3">
+          <span class="text-gray-600 font-medium">실길이 평균 오차 <span class="text-gray-400">(시간순 후반 검증 7코일)</span></span>
+          <div class="flex items-center gap-2 shrink-0">
+            <span class="px-2 py-0.5 rounded-full text-[11px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-200">IBA 21.83m 대비 -58.5%</span>
             <span class="font-extrabold text-gray-900 tabular-nums">9.05m</span>
           </div>
         </div>
         <div class="py-2.5 flex items-center justify-between gap-3">
-          <span class="text-gray-600 font-medium">실길이 평균 오차 <span class="text-gray-400">(교차검증 18코일)</span></span>
+          <span class="text-gray-600 font-medium">실길이 평균 오차 <span class="text-gray-400">(생산일 교차검증 18코일)</span></span>
           <div class="flex items-center gap-2 shrink-0">
-            <span class="px-2 py-0.5 rounded-full text-[11px] font-semibold bg-slate-100 text-slate-600">IBA 23.64m 대비 -21.9%</span>
+            <span class="px-2 py-0.5 rounded-full text-[11px] font-semibold bg-slate-100 text-slate-600">±15m 적중 72.2% (13/18)</span>
             <span class="font-extrabold text-gray-900 tabular-nums">18.47m</span>
           </div>
         </div>
+        <div class="py-2.5 flex items-center justify-between gap-3">
+          <span class="text-gray-600 font-medium">대표 코일 검증 <span class="text-gray-400">(P147453A-6A · 실측 4,733.3m)</span></span>
+          <span class="font-extrabold text-royal-700 tabular-nums shrink-0">4,737.3m (+3.99m)</span>
+        </div>
       `;
 
-      // Collapsible details
-      document.getElementById('home-details-body').innerHTML = `
+      document.getElementById('len-details-body').innerHTML = `
         <div class="bg-gray-50 rounded-xl p-3 border border-gray-200/70 space-y-1">
           <p class="font-bold text-gray-900">OGD 학습 파라미터 (예측 = (1 - w)·Base + w·IBA + s)</p>
-          <p class="font-mono text-[11px] text-gray-700">• 길이 (후반 7코일): w = 0.000, s = +2.0792m</p>
-          <p class="font-mono text-[11px] text-gray-700">• 길이 (교차검증 18코일): w = 0.000, s = +1.4421m</p>
-          <p class="font-mono text-[11px] text-gray-700">• 최저값 (교차검증 18코일): w = 0.389, s = +0.0843%p</p>
+          <p class="font-mono text-[11px] text-gray-700">• 후반 검증 7코일: w = 0.000, s = +2.0792m (MAE 9.05m)</p>
+          <p class="font-mono text-[11px] text-gray-700">• 교차검증 18코일: w = 0.000, s = +1.4421m (MAE 18.47m)</p>
         </div>
         <div class="overflow-x-auto rounded-xl border border-gray-200">
           <table class="w-full text-[11px] text-center border-collapse">
@@ -796,113 +1160,34 @@
         </div>
       `;
 
-      // Bottom Example Chart: 500N D12 P147453A-6A
-      const ex = D12_EXAMPLE_COIL;
-      let exHits = 0;
-      const pointColors = ex.actual.map((a, i) => {
-        if (Math.abs(a - ex.pred[i]) <= tol + 1e-9) {
-          exHits++;
-          return '#2563EB';
-        }
-        return '#DC2626';
-      });
-      const exPct = (exHits / ex.actual.length) * 100;
+      document.getElementById('len-chart-title').textContent = '500N D12 실길이 오차 비교 (후반 검증 7코일)';
+      document.getElementById('len-chart-subtitle').textContent = 'IBA 원본 오차 vs OGD 자동보정 오차 · 선택한 ±m 판정 범위 표시';
+      document.getElementById('len-stat1-label').textContent = '기준 이내 코일';
+      document.getElementById('len-stat1-val').textContent = `${hits7}/7코일 · ${pct7.toFixed(1)}%`;
+      document.getElementById('len-stat2-label').textContent = '평균 오차 (MAE)';
+      document.getElementById('len-stat2-val').textContent = '9.05m';
+      document.getElementById('len-yaxis-label').textContent = '실측 대비 길이 오차 (m)';
 
-      document.getElementById('ex-title').textContent = '판정 범위 예시 (500N D12 · OGD)';
-      document.getElementById('ex-subtitle').textContent = 'P147453A-6A · 실측 4,733.3m · OGD 예측 4,737.3m (+3.99m)';
-      document.getElementById('ex-stat1-label').textContent = '이 예시 코일의 일치';
-      document.getElementById('ex-stat1-val').textContent = `${exHits}/${ex.actual.length}점 · ${exPct.toFixed(1)}%`;
-      document.getElementById('ex-stat2-label').textContent = '최저값 오차';
-      document.getElementById('ex-stat2-val').textContent = '+0.17%p';
-      document.getElementById('ex-yaxis-label').textContent = '기준 대비 단위중량 편차 (%)';
-
-      document.getElementById('ex-legend-row').innerHTML = `
-        <span class="inline-flex items-center gap-1.5 font-medium text-royal-700">
-          <span class="w-3 h-3 rounded-xs bg-blue-200 border border-blue-300 inline-block"></span>
-          <span>선택한 판정 범위 ±${tol.toFixed(1)}%p</span>
-        </span>
-        <span class="inline-flex items-center gap-1.5"><span class="w-4 h-0.5 bg-royal-600 inline-block"></span>예측값</span>
-        <span class="inline-flex items-center gap-1.5"><span class="w-4 h-0.5 bg-gray-700 inline-block"></span>실측값</span>
-        <span class="inline-flex items-center gap-1.5 text-royal-600 font-medium"><span class="w-2.5 h-2.5 rounded-full bg-royal-600 inline-block"></span>기준 이내</span>
-        <span class="inline-flex items-center gap-1.5 text-red-600 font-medium"><span class="w-2.5 h-2.5 rounded-full bg-red-600 inline-block"></span>기준 밖</span>
-      `;
-
-      const upperBand = ex.distances.map((d, i) => ({ x: d, y: ex.pred[i] + tol }));
-      const lowerBand = ex.distances.map((d, i) => ({ x: d, y: ex.pred[i] - tol }));
-      const predPts = ex.distances.map((d, i) => ({ x: d, y: ex.pred[i] }));
-      const actualPts = ex.distances.map((d, i) => ({ x: d, y: ex.actual[i] }));
-
-      const ctx = document.getElementById('homeExampleChart').getContext('2d');
-      if (homeChart) homeChart.destroy();
-
-      homeChart = new Chart(ctx, {
-        type: 'line',
-        data: {
-          datasets: [
-            { label: '판정 상한', data: upperBand, borderColor: 'transparent', pointRadius: 0, fill: false, tension: 0.25 },
-            { label: `판정 범위 (±${tol.toFixed(1)}%p)`, data: lowerBand, borderColor: 'transparent', backgroundColor: 'rgba(59, 130, 246, 0.16)', pointRadius: 0, fill: '-1', tension: 0.25 },
-            { label: '예측값', data: predPts, borderColor: '#2563EB', borderWidth: 2, pointRadius: 0, fill: false, tension: 0.25 },
-            {
-              label: '실측값',
-              data: actualPts,
-              borderColor: '#374151',
-              borderWidth: 1.5,
-              pointBackgroundColor: pointColors,
-              pointBorderColor: '#FFFFFF',
-              pointBorderWidth: 1.5,
-              pointRadius: 4.5,
-              pointHoverRadius: 6.5,
-              fill: false,
-              tension: 0.1
-            }
-          ]
-        },
-        options: buildUnitWeightChartOptions(ex.maxLen)
-      });
+      renderLengthBarChart(D12_LEN7_COILS, 'OGD 자동보정', tol, -55, 30, 15);
     }
 
-    // Custom Chart.js plugin to draw shaded ±tolerance band for SD500 D10 bar chart
-    const d10BandPlugin = {
-      id: 'd10BandPlugin',
-      beforeDatasetsDraw(chart) {
-        const tol = chart.options.plugins?.d10BandPlugin?.tol;
-        if (!tol) return;
-        const { ctx, chartArea: { left, right }, scales: { y } } = chart;
-        const yTop = y.getPixelForValue(tol);
-        const yBot = y.getPixelForValue(-tol);
-        ctx.save();
-        ctx.fillStyle = 'rgba(59, 130, 246, 0.12)';
-        ctx.fillRect(left, yTop, right - left, yBot - yTop);
-        ctx.strokeStyle = 'rgba(37, 99, 235, 0.35)';
-        ctx.setLineDash([4, 4]);
-        ctx.beginPath();
-        ctx.moveTo(left, yTop); ctx.lineTo(right, yTop);
-        ctx.moveTo(left, yBot); ctx.lineTo(right, yBot);
-        ctx.stroke();
-        ctx.restore();
-      }
-    };
+    function renderLengthD10() {
+      const tol = lenD10ActiveTol;
+      lenD10PendingTol = tol;
 
-    function renderHomeD10() {
-      const tol = d10ActiveTol;
-      d10PendingTol = tol;
+      document.getElementById('len-model-badge').textContent = 'SD500 D10 · 피니싱 블록 RPM 비율 보정 (r = 0.923)';
+      document.getElementById('len-stepper-label').textContent = '실길이 일치 판정 기준 (시간순 순차검증 13코일 · m)';
+      document.getElementById('len-tol-display').textContent = `± ${tol} m`;
 
-      // Header badge & stepper
-      document.getElementById('home-model-badge').textContent = 'SD500 D10 · 피니싱 블록 RPM 비율 보정 (r = 0.923)';
-      document.getElementById('home-stepper-label').textContent = '실길이 일치 판정 기준 (13코일 순차검증)';
-      document.getElementById('tol-input-display').textContent = `± ${tol} m`;
-
-      // Live calculation from verified 13-coil sequential errors
       const hits13 = D10_COILS.filter(c => Math.abs(c.corrErr) <= tol + 1e-9).length;
       const pct13 = (hits13 / D10_COILS.length) * 100;
 
-      document.getElementById('home-kpi-label').textContent = '실측 대비 예측 일치율 (13코일)';
-      document.getElementById('home-match-rate').textContent = pct13.toFixed(1);
-      document.getElementById('home-match-caption').textContent =
+      document.getElementById('len-kpi-label').textContent = '실측 대비 예측 일치율 (13코일)';
+      document.getElementById('len-match-rate').textContent = pct13.toFixed(1);
+      document.getElementById('len-match-caption').textContent =
         `실측과 예측의 차이가 ±${tol}m 이내인 비율 (${hits13}/13코일)`;
 
-      // Separated metric rows
-      document.getElementById('home-metric-rows').innerHTML = `
+      document.getElementById('len-metric-rows').innerHTML = `
         <div class="py-2.5 flex items-center justify-between gap-3">
           <span class="text-gray-600 font-medium">실길이 평균 오차 <span class="text-gray-400">(시간순 순차검증 13코일)</span></span>
           <div class="flex items-center gap-2 shrink-0">
@@ -923,8 +1208,7 @@
         </div>
       `;
 
-      // Collapsible details
-      document.getElementById('home-details-body').innerHTML = `
+      document.getElementById('len-details-body').innerHTML = `
         <div class="bg-gray-50 rounded-xl p-3 border border-gray-200/70 space-y-1.5">
           <p class="font-bold text-gray-900">최종 보정식 (피니싱 블록 RPM 비율 보정)</p>
           <p class="font-mono text-[11px] font-bold text-royal-700">예측길이 = IBA 길이 × (3.985620 - 0.003243 × FB_RPM)</p>
@@ -938,47 +1222,49 @@
         </div>
       `;
 
-      // Bottom Example Chart: 13-coil IBA error vs FB-RPM corrected error
-      document.getElementById('ex-title').textContent = '판정 범위 예시 (SD500 D10 · FB-RPM 보정)';
-      document.getElementById('ex-subtitle').textContent = '13코일 시간순 순차검증 · IBA 원본 오차 vs FB-RPM 보정 오차';
-      document.getElementById('ex-stat1-label').textContent = '기준 이내 코일';
-      document.getElementById('ex-stat1-val').textContent = `${hits13}/13코일 · ${pct13.toFixed(1)}%`;
-      document.getElementById('ex-stat2-label').textContent = '평균 오차 (MAE)';
-      document.getElementById('ex-stat2-val').textContent = '49.21m';
-      document.getElementById('ex-yaxis-label').textContent = '실측 대비 길이 오차 (m)';
+      document.getElementById('len-chart-title').textContent = 'SD500 D10 실길이 오차 비교 (순차검증 13코일)';
+      document.getElementById('len-chart-subtitle').textContent = 'IBA 원본 오차 vs FB-RPM 보정 오차 · 선택한 ±m 판정 범위 표시';
+      document.getElementById('len-stat1-label').textContent = '기준 이내 코일';
+      document.getElementById('len-stat1-val').textContent = `${hits13}/13코일 · ${pct13.toFixed(1)}%`;
+      document.getElementById('len-stat2-label').textContent = '평균 오차 (MAE)';
+      document.getElementById('len-stat2-val').textContent = '49.21m';
+      document.getElementById('len-yaxis-label').textContent = '실측 대비 길이 오차 (m)';
 
-      document.getElementById('ex-legend-row').innerHTML = `
+      renderLengthBarChart(D10_COILS, 'FB-RPM 보정', tol, -260, 340, 100);
+    }
+
+    function renderLengthBarChart(coils, modelLabel, tol, yMin, yMax, yStep) {
+      document.getElementById('len-legend-row').innerHTML = `
         <span class="inline-flex items-center gap-1.5 font-medium text-royal-700">
           <span class="w-3 h-3 rounded-xs bg-blue-200 border border-blue-300 inline-block"></span>
           <span>선택한 판정 범위 ±${tol}m</span>
         </span>
         <span class="inline-flex items-center gap-1.5"><span class="w-3 h-3 rounded-xs bg-slate-300 inline-block"></span>IBA 원본 오차</span>
-        <span class="inline-flex items-center gap-1.5 text-royal-600 font-medium"><span class="w-3 h-3 rounded-xs bg-royal-600 inline-block"></span>FB-RPM 보정 (기준 이내)</span>
-        <span class="inline-flex items-center gap-1.5 text-red-600 font-medium"><span class="w-3 h-3 rounded-xs bg-red-600 inline-block"></span>FB-RPM 보정 (기준 밖)</span>
+        <span class="inline-flex items-center gap-1.5 text-royal-600 font-medium"><span class="w-3 h-3 rounded-xs bg-royal-600 inline-block"></span>${modelLabel} (기준 이내)</span>
+        <span class="inline-flex items-center gap-1.5 text-red-600 font-medium"><span class="w-3 h-3 rounded-xs bg-red-600 inline-block"></span>${modelLabel} (기준 밖)</span>
       `;
 
-      const corrColors = D10_COILS.map(c => Math.abs(c.corrErr) <= tol + 1e-9 ? '#2563EB' : '#DC2626');
+      const corrColors = coils.map(c => Math.abs(c.corrErr) <= tol + 1e-9 ? '#2563EB' : '#DC2626');
+      const ctx = document.getElementById('lengthVerifyChart').getContext('2d');
+      if (lengthChart) lengthChart.destroy();
 
-      const ctx = document.getElementById('homeExampleChart').getContext('2d');
-      if (homeChart) homeChart.destroy();
-
-      homeChart = new Chart(ctx, {
+      lengthChart = new Chart(ctx, {
         type: 'bar',
-        plugins: [d10BandPlugin],
+        plugins: [lengthBandPlugin],
         data: {
-          labels: D10_COILS.map(c => c.lot.replace('P1', '').slice(0, 9)),
+          labels: coils.map(c => c.lot.replace('P1', '').slice(0, 9)),
           datasets: [
             {
               label: 'IBA 원본 오차',
-              data: D10_COILS.map(c => c.ibaErr),
+              data: coils.map(c => c.ibaErr),
               backgroundColor: '#CBD5E1',
               borderRadius: 4,
               barPercentage: 0.85,
               categoryPercentage: 0.72
             },
             {
-              label: 'FB-RPM 보정 오차',
-              data: D10_COILS.map(c => c.corrErr),
+              label: `${modelLabel} 오차`,
+              data: coils.map(c => c.corrErr),
               backgroundColor: corrColors,
               borderRadius: 4,
               barPercentage: 0.85,
@@ -991,10 +1277,10 @@
           maintainAspectRatio: false,
           plugins: {
             legend: { display: false },
-            d10BandPlugin: { tol },
+            lengthBandPlugin: { tol },
             tooltip: {
               callbacks: {
-                title: items => `코일 LOT: ${D10_COILS[items[0].dataIndex].lot}`,
+                title: items => `코일 LOT: ${coils[items[0].dataIndex].lot}`,
                 label: ctx => `${ctx.dataset.label}: ${ctx.parsed.y >= 0 ? '+' : ''}${ctx.parsed.y.toFixed(1)}m`
               }
             }
@@ -1005,11 +1291,11 @@
               ticks: { color: '#6B7280', font: { size: 10 }, maxRotation: 40, minRotation: 0 }
             },
             y: {
-              min: -260,
-              max: 340,
+              min: yMin,
+              max: yMax,
               grid: { color: ctx => ctx.tick.value === 0 ? '#94A3B8' : '#F3F4F6' },
               ticks: {
-                stepSize: 100,
+                stepSize: yStep,
                 color: '#6B7280',
                 font: { size: 11 },
                 callback: v => `${v > 0 ? '+' : ''}${v}m`
@@ -1657,7 +1943,7 @@
 
     function renderPredictChart() {
       if (!currentCoil || !currentCoil.predCurve) return;
-      const tol = d12ActiveTol;
+      const tol = homeActiveTol;
       const curve = currentCoil.predCurve;
       const maxLen = curve[curve.length - 1].x;
 
