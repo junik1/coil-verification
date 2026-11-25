@@ -580,6 +580,35 @@
             <p id="actual-compare-status" class="mt-1.5 text-base sm:text-lg font-extrabold text-gray-900">
               실측 0점 · 실측 데이터가 없습니다
             </p>
+
+            <!-- 길이 예측치 정확도 비교 박스 (실측 데이터 존재 시 표시) -->
+            <div id="actual-length-compare" class="hidden mt-3.5 rounded-xl bg-gray-50 border border-gray-200/80 p-4">
+              <div class="flex flex-wrap items-center justify-between gap-2 mb-2.5">
+                <span class="text-xs font-bold text-gray-700">실길이 예측 정확도 검증</span>
+                <span id="act-len-badge" class="text-[11px] font-bold px-2.5 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200">
+                  ±15m 이내 적중
+                </span>
+              </div>
+              <div class="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs">
+                <div>
+                  <span class="text-gray-500 font-medium">길이 예측 정확도</span>
+                  <p id="act-len-accuracy" class="mt-0.5 text-base font-extrabold text-royal-600 tabular-nums">-</p>
+                </div>
+                <div>
+                  <span class="text-gray-500 font-medium">모델 예측 길이</span>
+                  <p id="act-len-pred" class="mt-0.5 text-sm font-bold text-gray-900 tabular-nums">-</p>
+                </div>
+                <div>
+                  <span class="text-gray-500 font-medium">실측 총 길이</span>
+                  <p id="act-len-actual" class="mt-0.5 text-sm font-bold text-gray-900 tabular-nums">-</p>
+                </div>
+                <div>
+                  <span class="text-gray-500 font-medium">예측 오차 (예측−실측)</span>
+                  <p id="act-len-diff" class="mt-0.5 text-sm font-extrabold text-gray-900 tabular-nums">-</p>
+                </div>
+              </div>
+            </div>
+
             <div class="mt-4">
               <input id="actual-file-input" type="file" accept=".xlsx,.xls" class="hidden" />
               <button onclick="document.getElementById('actual-file-input').click()" class="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-gray-100 hover:bg-gray-200 text-gray-800 text-xs sm:text-sm font-semibold transition-colors cursor-pointer">
@@ -1917,6 +1946,8 @@
       const tailInput = parseFloat(document.getElementById('inp-tail-dev').value);
       const calc = computeCorrectedLength(spec, currentCoil.ibaLen, currentCoil.fbRpm);
       const predLen = !isNaN(calc.predLen) ? calc.predLen : NaN;
+      currentCoil.predLen = predLen;
+      currentCoil.modelTag = calc.modelTag;
 
       // Determine whether actual length exists (from uploaded actual sheet or manual user entry)
       const actualLenFromSheet = (currentCoil.actualPoints && currentCoil.actualPoints.length > 0)
@@ -2054,6 +2085,7 @@
 
       // Overlay actual points if available
       const actPts = currentCoil.actualPoints || [];
+      const lenCompareBox = document.getElementById('actual-length-compare');
       if (actPts.length > 0) {
         let hits = 0, sumAbs = 0;
         const colors = actPts.map(pt => {
@@ -2066,9 +2098,36 @@
         const pct = (hits / actPts.length) * 100;
         const mae = sumAbs / actPts.length;
         const actMaxLen = actPts[actPts.length - 1].x;
-        const lenDiff = maxLen - actMaxLen;
+
+        // 실제 모델 예측 길이(currentCoil.predLen)와 실측 길이(actMaxLen) 비교
+        const modelPredLen = !isNaN(currentCoil.predLen) ? currentCoil.predLen : maxLen;
+        const lenDiff = modelPredLen - actMaxLen;
+        const lenAcc = actMaxLen > 0 ? Math.max(0, (1 - Math.abs(lenDiff) / actMaxLen) * 100) : 0;
+        const spec = document.getElementById('inp-spec').value;
+        const lenTol = spec === 'SD500 D10' ? lenD10ActiveTol : lenD12ActiveTol;
+        const lenPass = Math.abs(lenDiff) <= lenTol + 1e-9;
+
         document.getElementById('actual-compare-status').textContent =
-          `실측 ${actPts.length}점 · ±${tol.toFixed(1)}%p 일치율 ${pct.toFixed(1)}% (평균 ${mae.toFixed(2)}%p · 길이 오차 ${lenDiff >= 0 ? '+' : ''}${lenDiff.toFixed(1)}m)`;
+          `실측 ${actPts.length}점 · ±${tol.toFixed(1)}%p 일치율 ${pct.toFixed(1)}% (평균 ${mae.toFixed(2)}%p)`;
+
+        if (lenCompareBox) {
+          lenCompareBox.classList.remove('hidden');
+          document.getElementById('act-len-accuracy').textContent = `${lenAcc.toFixed(2)}%`;
+          document.getElementById('act-len-pred').textContent = `${modelPredLen.toLocaleString(undefined, { minimumFractionDigits: 1, maximumFractionDigits: 1 })}m`;
+          document.getElementById('act-len-actual').textContent = `${actMaxLen.toLocaleString(undefined, { minimumFractionDigits: 1, maximumFractionDigits: 1 })}m`;
+          const diffEl = document.getElementById('act-len-diff');
+          diffEl.textContent = `${lenDiff >= 0 ? '+' : ''}${lenDiff.toFixed(1)}m`;
+          diffEl.className = `mt-0.5 text-sm font-extrabold tabular-nums ${lenPass ? 'text-emerald-700' : 'text-red-600'}`;
+
+          const badgeEl = document.getElementById('act-len-badge');
+          if (lenPass) {
+            badgeEl.className = 'text-[11px] font-bold px-2.5 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200';
+            badgeEl.textContent = `±${lenTol}m 이내 적중 (${currentCoil.modelTag || '예측'})`;
+          } else {
+            badgeEl.className = 'text-[11px] font-bold px-2.5 py-0.5 rounded-full bg-red-50 text-red-700 border border-red-200';
+            badgeEl.textContent = `±${lenTol}m 기준 초과 (${currentCoil.modelTag || '예측'})`;
+          }
+        }
 
         datasets.push({
           label: '실측값',
@@ -2086,6 +2145,7 @@
       } else {
         document.getElementById('actual-compare-status').textContent =
           '실측 0점 · 실측 데이터가 없습니다';
+        if (lenCompareBox) lenCompareBox.classList.add('hidden');
       }
 
       const ctx = document.getElementById('predictMainChart').getContext('2d');
@@ -2164,6 +2224,8 @@
       document.getElementById('predict-loaded-state').classList.add('hidden');
       document.getElementById('pred-tol-badge').classList.add('hidden');
       document.getElementById('actual-compare-status').textContent = '실측 0점 · 실측 데이터가 없습니다';
+      const lenCompareBox = document.getElementById('actual-length-compare');
+      if (lenCompareBox) lenCompareBox.classList.add('hidden');
       if (predictChart) { predictChart.destroy(); predictChart = null; }
       showToast('입력 내용을 초기화했습니다.', 'info');
     }
