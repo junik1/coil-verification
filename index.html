@@ -68,6 +68,50 @@
   <!-- Minimal Toast Container -->
   <div id="toast-container" class="fixed bottom-5 right-5 z-50 flex flex-col gap-2 max-w-xs w-full px-4 sm:px-0 pointer-events-none"></div>
 
+  <!-- Prediction Fallback & Reliability Modal (Replaces alert()) -->
+  <div id="pred-fallback-modal" class="fixed inset-0 z-50 hidden items-center justify-center bg-gray-900/45 backdrop-blur-[2px] p-4" role="dialog" aria-modal="true" aria-labelledby="pred-modal-title">
+    <div class="bg-white rounded-2xl border border-gray-200 shadow-xl max-w-md w-full p-6 space-y-4">
+      <div class="flex items-start gap-3">
+        <div class="w-10 h-10 rounded-xl bg-royal-50 text-royal-600 flex items-center justify-center shrink-0">
+          <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2.2" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M11.25 11.25l.041-.02a.75.75 0 011.063.852l-.708 2.836a.75.75 0 001.063.853l.041-.021M21 12a9 9 0 11-18 0 9 9 0 0118 0zm-9-3.75h.008v.008H12V8.25z" />
+          </svg>
+        </div>
+        <div>
+          <h3 id="pred-modal-title" class="text-base font-extrabold text-gray-900">실측치 없음 · 예측 길이 자동 적용</h3>
+          <p id="pred-modal-desc" class="mt-1 text-xs sm:text-sm text-gray-600 leading-relaxed">
+            실측 총 길이 데이터가 없어 모델 예측치를 자동 입력했습니다.
+          </p>
+        </div>
+      </div>
+
+      <!-- Reliability Highlight Card -->
+      <div class="rounded-xl bg-royal-50/80 border border-blue-100 p-4 space-y-1.5">
+        <div class="flex items-center justify-between">
+          <span class="text-xs font-bold text-royal-700">적용 모델 신뢰도</span>
+          <span id="pred-modal-model" class="text-[11px] font-bold px-2 py-0.5 rounded-md bg-white text-royal-700 border border-blue-100">500N D12 (OGD)</span>
+        </div>
+        <div class="flex items-baseline gap-2">
+          <span id="pred-modal-confidence" class="text-2xl font-extrabold text-royal-600 tabular-nums">85.7%</span>
+          <span id="pred-modal-conf-basis" class="text-xs font-semibold text-gray-700">±15m 이내 적중률 (최근 7코일)</span>
+        </div>
+        <p id="pred-modal-conf-sub" class="text-[11px] text-gray-600 leading-relaxed">
+          평균 오차 9.05m · 전체 18코일 교차검증 기준 적중률 72.2% (평균 오차 18.47m)
+        </p>
+      </div>
+
+      <p class="text-[11px] text-gray-500 leading-relaxed">
+        추후 실측 길이가 확인되면 <strong>총 길이 (m)</strong> 칸에 직접 입력하거나 우측 <strong>실측 엑셀 추가</strong> 버튼으로 실측치를 반영할 수 있습니다.
+      </p>
+
+      <div class="flex justify-end pt-1">
+        <button onclick="closePredFallbackModal()" class="px-5 py-2.5 rounded-xl bg-royal-600 hover:bg-royal-700 text-white text-sm font-bold transition-colors cursor-pointer">
+          확인
+        </button>
+      </div>
+    </div>
+  </div>
+
   <!-- Minimal Top Navigation Bar -->
   <header class="bg-white border-b border-gray-200 sticky top-0 z-30">
     <div class="max-w-6xl mx-auto px-4 sm:px-6 h-14 flex items-center justify-between">
@@ -213,87 +257,11 @@
 
           <div class="flex items-center gap-6">
             <div>
-              <p id="ex-stat1-label" class="text-[11px] font-medium text-gray-500">이 예시 코일의 일치</p>
-              <p id="ex-stat1-val" class="text-sm font-extrabold text-royal-600 tabular-nums">27/32점 · 84.4%</p>
-            </div>
-            <div>
-              <p id="ex-stat2-label" class="text-[11px] font-medium text-gray-500">최저값 오차</p>
-              <p id="ex-stat2-val" class="text-sm font-extrabold text-gray-900 tabular-nums">+0.17%p</p>
-            </div>
-          </div>
-        </div>
-
-        <!-- Custom Legend Row (Dynamic per model) -->
-        <div id="ex-legend-row" class="flex flex-wrap items-center gap-x-5 gap-y-2 text-xs text-gray-600 mb-3">
-          <!-- Populated dynamically -->
-        </div>
-
-        <p id="ex-yaxis-label" class="text-[11px] font-medium text-gray-400 mb-1">기준 대비 단위중량 편차 (%)</p>
-        <div class="relative h-72 sm:h-80 w-full">
-          <canvas id="homeExampleChart"></canvas>
-        </div>
-      </div>
-    </section>
-
-    <!-- =================================================================== -->
-    <!-- VIEW 2: 코일 예측 화면 (작업자 업로드 및 실시간 검증)                 -->
-    <!-- =================================================================== -->
-    <section id="view-predict" class="view-section hidden space-y-5">
-      <!-- Clean Workspace Header Bar -->
-      <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-        <div class="flex items-center gap-3">
-          <button onclick="switchView('home')" class="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg border border-gray-200 bg-white hover:bg-gray-50 text-xs font-semibold text-gray-700 transition-colors cursor-pointer">
-            <span>←</span>
-            <span>홈으로</span>
-          </button>
-          <h1 class="text-base sm:text-lg font-extrabold text-gray-900 tracking-tight">코일 예측 · 현장 작업자용</h1>
-        </div>
-        <div class="flex items-center gap-2">
-          <button onclick="loadSampleCoilIntoPredict('D12')" class="px-3 py-1.5 rounded-lg border border-gray-200 bg-white hover:bg-gray-50 text-xs font-semibold text-gray-700 transition-colors cursor-pointer">
-            예시 불러오기 (D12)
-          </button>
-          <button onclick="loadSampleCoilIntoPredict('D10')" class="px-3 py-1.5 rounded-lg border border-gray-200 bg-white hover:bg-gray-50 text-xs font-semibold text-gray-700 transition-colors cursor-pointer">
-            예시 불러오기 (D10)
-          </button>
-        </div>
-      </div>
-
-      <div class="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
-
-        <!-- LEFT SIDEBAR (lg:col-span-3, 3 stacked cards) -->
-        <aside class="lg:col-span-3 space-y-4">
-
-          <!-- Card 1: 파일 업로드 -->
-          <div class="bg-white rounded-2xl border border-gray-200 p-5 shadow-xs">
-            <h2 class="text-sm font-bold text-gray-900 mb-3">파일 업로드</h2>
-            <input id="iba-file-input" type="file" accept=".xlsx,.xls,.txt,.csv" class="hidden" />
-            <button onclick="document.getElementById('iba-file-input').click()" class="w-full py-3 px-4 rounded-xl bg-royal-600 hover:bg-royal-700 text-white text-sm font-bold flex items-center justify-center gap-2 transition-colors cursor-pointer shadow-xs">
-              <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2.2" viewBox="0 0 24 24">
-                <path stroke-linecap="round" stroke-linejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5m-13.5-9L12 3m0 0l4.5 4.5M12 3v13.5" />
-              </svg>
-              <span>엑셀 / IBA TXT 업로드</span>
-            </button>
-            <p id="upload-status-text" class="mt-2.5 text-xs text-gray-500 break-all">
-              아직 업로드한 파일이 없습니다.
-            </p>
-          </div>
-
-          <!-- Card 2: 작업자 입력 -->
-          <div class="bg-white rounded-2xl border border-gray-200 p-5 shadow-xs">
-            <h2 class="text-sm font-bold text-royal-700 mb-3">작업자 입력</h2>
-            <label for="inp-tail-dev" class="block text-xs font-semibold text-gray-700 mb-1.5">
-              꼬리부 단위중량 편차 (%) · 선택
-            </label>
-            <input id="inp-tail-dev" type="number" step="0.01" placeholder="직접 입력 · 예: 1.93" oninput="onWorkerInputChange()" class="w-full rounded-xl border border-gray-300 px-3 py-2.5 text-sm text-gray-900 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-royal-600 focus:border-royal-600" />
-          </div>
-
-          <!-- Card 3: 자동 입력 정보 -->
-          <div class="bg-white rounded-2xl border border-gray-200 p-5 shadow-xs space-y-3.5">
-            <h2 class="text-sm font-bold text-gray-900">자동 입력 정보</h2>
-
-            <div>
-              <label for="inp-lot" class="block text-xs font-semibold text-gray-600 mb-1">LOT 번호</label>
-              <input id="inp-lot" type="text" placeholder="업로드 후 자동 입력" class="w-full rounded-xl border border-gray-300 px-3 py-2 text-sm text-gray-900 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-royal-600" />
+              <div class="flex items-center justify-between mb-1">
+                <label for="inp-length" class="block text-xs font-semibold text-gray-600">총 길이 (m)</label>
+                <span id="length-source-badge" class="hidden text-[10px] font-bold px-2 py-0.5 rounded-md"></span>
+              </div>
+              <input id="inp-length" type="number" step="0.01" placeholder="업로드 후 자동 입력" oninput="onManualLengthInput()" onblur="onLengthInputBlur()" class="w-full rounded-xl border border-gray-300 px-3 py-2 text-sm text-gray-900 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-royal-600" />
             </div>
 
             <div>
@@ -521,11 +489,62 @@
     let homeChart = null;
     let predictChart = null;
     let currentCoil = null;
+    let isManualLengthInput = false;
     let sessionHistory = [];
 
     // =========================================================================
-    // 2. TOAST NOTIFICATION UTILITY
+    // 2. TOAST & PREDICTION FALLBACK MODAL UTILITIES
     // =========================================================================
+    function openPredFallbackModal(spec, predLen) {
+      const modal = document.getElementById('pred-fallback-modal');
+      const lenStr = isNaN(predLen) ? '-' : `${predLen.toLocaleString(undefined, { minimumFractionDigits: 1, maximumFractionDigits: 1 })}m`;
+
+      if (spec === 'SD500 D10') {
+        document.getElementById('pred-modal-model').textContent = 'SD500 D10 (FB-RPM)';
+        document.getElementById('pred-modal-desc').innerHTML =
+          `실측 길이 정보가 없어 <strong>FB-RPM 비율 보정 예측치 (${lenStr})</strong>를 총 길이에 자동 입력했습니다.`;
+        document.getElementById('pred-modal-confidence').textContent = '85.2%';
+        document.getElementById('pred-modal-conf-basis').textContent = '설명력 R² (상관계수 r = 0.923)';
+        document.getElementById('pred-modal-conf-sub').textContent =
+          '13코일 순차검증 평균 오차 49.21m · 중앙값 오차 27.14m (IBA 원본 대비 오차 58.9% 감소)';
+      } else {
+        document.getElementById('pred-modal-model').textContent = '500N D12 (OGD)';
+        document.getElementById('pred-modal-desc').innerHTML =
+          `실측 길이 정보가 없어 <strong>OGD 자동보정 예측치 (${lenStr})</strong>를 총 길이에 자동 입력했습니다.`;
+        document.getElementById('pred-modal-confidence').textContent = '85.7%';
+        document.getElementById('pred-modal-conf-basis').textContent = '±15m 이내 적중률 (최근 7코일)';
+        document.getElementById('pred-modal-conf-sub').textContent =
+          '평균 오차 9.05m · 전체 18코일 교차검증 기준 ±15m 적중률 72.2% (평균 오차 18.47m)';
+      }
+
+      modal.classList.remove('hidden');
+      modal.classList.add('flex');
+    }
+
+    function closePredFallbackModal() {
+      const modal = document.getElementById('pred-fallback-modal');
+      modal.classList.add('hidden');
+      modal.classList.remove('flex');
+    }
+
+    function updateLengthSourceBadge(sourceType) {
+      const badge = document.getElementById('length-source-badge');
+      if (!badge) return;
+      if (sourceType === 'actual') {
+        badge.textContent = '실측치 적용';
+        badge.className = 'text-[10px] font-bold px-2 py-0.5 rounded-md bg-emerald-50 text-emerald-700 border border-emerald-200';
+      } else if (sourceType === 'manual') {
+        badge.textContent = '실측치 (직접 입력)';
+        badge.className = 'text-[10px] font-bold px-2 py-0.5 rounded-md bg-emerald-50 text-emerald-700 border border-emerald-200';
+      } else if (sourceType === 'predicted') {
+        badge.textContent = '예측치 적용';
+        badge.className = 'text-[10px] font-bold px-2 py-0.5 rounded-md bg-royal-50 text-royal-700 border border-blue-200';
+      } else {
+        badge.textContent = '';
+        badge.className = 'hidden';
+      }
+    }
+
     function showToast(message, type = 'info') {
       const container = document.getElementById('toast-container');
       if (!container) return;
@@ -1049,11 +1068,12 @@
           return;
         }
         currentCoil.actualPoints = actualData.points;
+        isManualLengthInput = false;
         if (!isNaN(actualData.actualWeight)) {
           document.getElementById('inp-weight').value = actualData.actualWeight.toFixed(1);
         }
-        renderPredictChart();
-        showToast(`실측 데이터 ${actualData.points.length}점을 그래프에 추가했습니다.`, 'success');
+        recalculateAndRenderCurrentCoil(false, false);
+        showToast(`실측 데이터 ${actualData.points.length}점을 반영하고 총 길이를 실측치로 전환했습니다.`, 'success');
       } catch (err) {
         console.error(err);
         showToast('실측 엑셀 파싱 중 오류가 발생했습니다.', 'error');
@@ -1247,6 +1267,12 @@
     }
 
     function applyParsedCoil(parsed) {
+      // Preserve pre-entered manual length only if user typed it before uploading the first coil
+      const keepPreTypedManual = !currentCoil && isManualLengthInput && document.getElementById('inp-length').value.trim() !== '';
+      if (!keepPreTypedManual) {
+        isManualLengthInput = false;
+      }
+
       currentCoil = parsed;
       document.getElementById('upload-status-text').textContent = `업로드됨: ${parsed.filename}`;
       document.getElementById('inp-lot').value = parsed.lot || '';
@@ -1254,37 +1280,74 @@
       if (!isNaN(parsed.tailDev)) document.getElementById('inp-tail-dev').value = parsed.tailDev.toFixed(2);
       if (!isNaN(parsed.speed)) document.getElementById('inp-speed').value = parsed.speed.toFixed(1);
 
-      recalculateAndRenderCurrentCoil(true);
+      recalculateAndRenderCurrentCoil(true, true);
     }
 
     function onSpecChange() {
       if (!currentCoil) return;
       currentCoil.spec = document.getElementById('inp-spec').value;
-      recalculateAndRenderCurrentCoil(false);
+      recalculateAndRenderCurrentCoil(false, false);
     }
 
     function onWorkerInputChange() {
       if (!currentCoil) return;
-      recalculateAndRenderCurrentCoil(false);
+      recalculateAndRenderCurrentCoil(false, false);
     }
 
-    function recalcWeightFromLength() {
-      const len = parseFloat(document.getElementById('inp-length').value);
-      const spec = document.getElementById('inp-spec').value;
-      if (!isNaN(len)) {
+    function onManualLengthInput() {
+      const raw = document.getElementById('inp-length').value.trim();
+      const len = parseFloat(raw);
+      if (raw !== '' && !isNaN(len)) {
+        isManualLengthInput = true;
+        updateLengthSourceBadge('manual');
+        const spec = document.getElementById('inp-spec').value;
         const nom = NOMINAL_WEIGHT_PER_M[spec] || 0.888;
         document.getElementById('inp-weight').value = (len * nom).toFixed(1);
+        if (currentCoil) recalculateAndRenderCurrentCoil(false, false);
+      } else {
+        isManualLengthInput = false;
+        if (!currentCoil) updateLengthSourceBadge('none');
       }
     }
 
-    function recalculateAndRenderCurrentCoil(logToHistory) {
+    function onLengthInputBlur() {
+      const raw = document.getElementById('inp-length').value.trim();
+      // If user left Total Length empty while a coil is loaded, automatically fill with predicted length and show popup
+      if (raw === '' && currentCoil) {
+        isManualLengthInput = false;
+        recalculateAndRenderCurrentCoil(false, true);
+      }
+    }
+
+    function recalculateAndRenderCurrentCoil(logToHistory, showPopupIfPredicted = false) {
       if (!currentCoil) return;
       const spec = document.getElementById('inp-spec').value;
       const tailInput = parseFloat(document.getElementById('inp-tail-dev').value);
       const calc = computeCorrectedLength(spec, currentCoil.ibaLen, currentCoil.fbRpm);
+      const predLen = !isNaN(calc.predLen) ? calc.predLen : NaN;
 
-      const finalLen = !isNaN(calc.predLen) ? calc.predLen : (currentCoil.actualPoints.length ? currentCoil.actualPoints[currentCoil.actualPoints.length - 1].x : 4733);
-      document.getElementById('inp-length').value = finalLen.toFixed(2);
+      // Determine whether actual length exists (from uploaded actual sheet or manual user entry)
+      const actualLenFromSheet = (currentCoil.actualPoints && currentCoil.actualPoints.length > 0)
+        ? currentCoil.actualPoints[currentCoil.actualPoints.length - 1].x
+        : NaN;
+      const manualVal = parseFloat(document.getElementById('inp-length').value);
+
+      let finalLen;
+      let usedPredictionFallback = false;
+
+      if (!isNaN(actualLenFromSheet)) {
+        finalLen = actualLenFromSheet;
+        document.getElementById('inp-length').value = finalLen.toFixed(2);
+        updateLengthSourceBadge('actual');
+      } else if (isManualLengthInput && !isNaN(manualVal)) {
+        finalLen = manualVal;
+        updateLengthSourceBadge('manual');
+      } else {
+        finalLen = !isNaN(predLen) ? predLen : 4733.0;
+        document.getElementById('inp-length').value = finalLen.toFixed(2);
+        updateLengthSourceBadge('predicted');
+        usedPredictionFallback = true;
+      }
 
       // Generate prediction curve
       const predCurve = generatePredictionCurve(finalLen, spec, tailInput);
@@ -1298,9 +1361,10 @@
       const calcWeight = !isNaN(currentCoil.weight) ? currentCoil.weight : finalLen * nom * (1 + avgDev / 100);
       document.getElementById('inp-weight').value = calcWeight.toFixed(1);
 
-      // Update Result Strip
+      // Update Result Strip (always show model predicted length vs IBA)
+      const displayPredLen = !isNaN(predLen) ? predLen : finalLen;
       document.getElementById('res-model-tag').textContent = calc.modelTag;
-      document.getElementById('res-pred-len').textContent = `${finalLen.toLocaleString(undefined, { minimumFractionDigits: 1, maximumFractionDigits: 1 })}m`;
+      document.getElementById('res-pred-len').textContent = `${displayPredLen.toLocaleString(undefined, { minimumFractionDigits: 1, maximumFractionDigits: 1 })}m`;
       document.getElementById('res-iba-len').textContent = isNaN(currentCoil.ibaLen) ? '-' : `${currentCoil.ibaLen.toLocaleString(undefined, { minimumFractionDigits: 1, maximumFractionDigits: 1 })}m`;
       document.getElementById('res-pred-min').textContent = `${minDev >= 0 ? '+' : ''}${minDev.toFixed(2)}%`;
       document.getElementById('res-spec-line').textContent = `${spec} · ${currentCoil.line}`;
@@ -1314,7 +1378,7 @@
           time: new Date().toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' }),
           lot: currentCoil.lot,
           spec,
-          predLen: finalLen.toFixed(1),
+          predLen: displayPredLen.toFixed(1),
           minDev: minDev.toFixed(2)
         });
         renderSessionHistory();
@@ -1326,6 +1390,11 @@
       document.getElementById('pred-tol-badge').classList.remove('hidden');
 
       renderPredictChart();
+
+      // Open reliability modal if no actual length existed and prediction was auto-filled
+      if (usedPredictionFallback && showPopupIfPredicted) {
+        openPredFallbackModal(spec, finalLen);
+      }
     }
 
     function interpolatePredAt(curve, x) {
@@ -1472,7 +1541,7 @@
         speed: 42.5,
         tailDev: 1.85,
         weight: 4202.5,
-        actualPoints: ex.distances.map((d, i) => ({ x: d, y: ex.actual[i] }))
+        actualPoints: ex.distances.map((d, i) => ({ x: i === ex.distances.length - 1 ? 4733.33 : d, y: ex.actual[i] }))
       };
       applyParsedCoil(sampleD12);
       showToast('500N D12 예시 코일(P147453A-6A)을 불러왔습니다.', 'success');
@@ -1480,6 +1549,8 @@
 
     function resetPredictView() {
       currentCoil = null;
+      isManualLengthInput = false;
+      updateLengthSourceBadge('none');
       document.getElementById('upload-status-text').textContent = '아직 업로드한 파일이 없습니다.';
       document.getElementById('inp-tail-dev').value = '';
       document.getElementById('inp-lot').value = '';
