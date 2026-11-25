@@ -256,12 +256,69 @@
           </div>
 
           <div class="flex items-center gap-6">
+            <div class="text-left md:text-right">
+              <p id="ex-stat1-label" class="text-[11px] font-medium text-gray-500">이 예시 코일의 일치</p>
+              <p id="ex-stat1-val" class="text-sm font-extrabold text-royal-600 tabular-nums mt-0.5">26/32점 · 81.3%</p>
+            </div>
+            <div class="text-left md:text-right">
+              <p id="ex-stat2-label" class="text-[11px] font-medium text-gray-500">최저값 오차</p>
+              <p id="ex-stat2-val" class="text-sm font-extrabold text-gray-900 tabular-nums mt-0.5">+0.17%p</p>
+            </div>
+          </div>
+        </div>
+
+        <!-- Custom Legend -->
+        <div id="ex-legend-row" class="flex flex-wrap items-center gap-x-5 gap-y-2 text-xs text-gray-600 mb-3"></div>
+
+        <!-- Y-Axis Label -->
+        <p id="ex-yaxis-label" class="text-[11px] font-medium text-gray-500 mb-1">기준 대비 단위중량 편차 (%)</p>
+
+        <!-- Chart Canvas -->
+        <div class="relative h-72 sm:h-80 w-full">
+          <canvas id="homeExampleChart"></canvas>
+        </div>
+      </div>
+    </section>
+
+    <!-- =================================================================== -->
+    <!-- VIEW 2: 코일 예측 화면 (작업자 업로드 및 실시간 예측)                   -->
+    <!-- =================================================================== -->
+    <section id="view-predict" class="view-section hidden">
+      <div class="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
+
+        <!-- LEFT SIDEBAR (lg:col-span-3, 3 stacked cards) -->
+        <aside class="lg:col-span-3 space-y-4">
+          <!-- Card 1: 파일 업로드 -->
+          <div class="bg-white rounded-2xl border border-gray-200 p-5 shadow-xs">
+            <h2 class="text-sm font-bold text-gray-900 mb-3">파일 업로드</h2>
+            <input id="iba-file-input" type="file" accept=".xlsx,.xls,.txt,.csv" class="hidden" />
+            <button onclick="document.getElementById('iba-file-input').click()" class="w-full py-2.5 px-4 rounded-xl bg-royal-600 hover:bg-royal-700 text-white text-sm font-bold flex items-center justify-center gap-2 transition-colors cursor-pointer">
+              <svg class="w-4 h-4 shrink-0" fill="none" stroke="currentColor" stroke-width="2.2" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5m-13.5-9L12 3m0 0l4.5 4.5M12 3v13.5" />
+              </svg>
+              <span>엑셀 / IBA TXT 업로드</span>
+            </button>
+            <p id="upload-status-text" class="mt-2.5 text-xs text-gray-500 truncate">
+              아직 업로드한 파일이 없습니다.
+            </p>
+          </div>
+
+          <!-- Card 2: 작업자 입력 -->
+          <div class="bg-white rounded-2xl border border-gray-200 p-5 shadow-xs">
+            <h2 class="text-sm font-bold text-royal-600 mb-3">작업자 입력</h2>
+            <label for="inp-tail-dev" class="block text-xs font-semibold text-gray-700 mb-1.5">
+              꼬리부 단위중량 편차 (%) · 선택
+            </label>
+            <input id="inp-tail-dev" type="number" step="0.01" placeholder="직접 입력 · 예: 1.93" oninput="onWorkerInputChange()" class="w-full rounded-xl border border-gray-300 px-3 py-2 text-sm text-gray-900 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-royal-600" />
+          </div>
+
+          <!-- Card 3: 자동 입력 정보 -->
+          <div class="bg-white rounded-2xl border border-gray-200 p-5 shadow-xs space-y-3.5">
+            <h2 class="text-sm font-bold text-gray-900">자동 입력 정보</h2>
+
             <div>
-              <div class="flex items-center justify-between mb-1">
-                <label for="inp-length" class="block text-xs font-semibold text-gray-600">총 길이 (m)</label>
-                <span id="length-source-badge" class="hidden text-[10px] font-bold px-2 py-0.5 rounded-md"></span>
-              </div>
-              <input id="inp-length" type="number" step="0.01" placeholder="업로드 후 자동 입력" oninput="onManualLengthInput()" onblur="onLengthInputBlur()" class="w-full rounded-xl border border-gray-300 px-3 py-2 text-sm text-gray-900 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-royal-600" />
+              <label for="inp-lot" class="block text-xs font-semibold text-gray-600 mb-1">LOT 번호</label>
+              <input id="inp-lot" type="text" placeholder="업로드 후 자동 입력" class="w-full rounded-xl border border-gray-300 px-3 py-2 text-sm text-gray-900 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-royal-600" />
             </div>
 
             <div>
@@ -273,8 +330,11 @@
             </div>
 
             <div>
-              <label for="inp-length" class="block text-xs font-semibold text-gray-600 mb-1">총 길이 (m)</label>
-              <input id="inp-length" type="number" step="0.01" placeholder="업로드 후 자동 입력" oninput="recalcWeightFromLength()" class="w-full rounded-xl border border-gray-300 px-3 py-2 text-sm text-gray-900 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-royal-600" />
+              <div class="flex items-center justify-between mb-1">
+                <label for="inp-length" class="block text-xs font-semibold text-gray-600">총 길이 (m)</label>
+                <span id="length-source-badge" class="hidden text-[10px] font-bold px-2 py-0.5 rounded-md"></span>
+              </div>
+              <input id="inp-length" type="number" step="0.01" placeholder="업로드 후 자동 입력" oninput="onManualLengthInput()" onblur="onLengthInputBlur()" class="w-full rounded-xl border border-gray-300 px-3 py-2 text-sm text-gray-900 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-royal-600" />
             </div>
 
             <div>
@@ -445,6 +505,23 @@
     const D12_OGD_SHIFT = 2.0792;       // 후반 7코일 학습 파라미터 (w=0.000, s=+2.0792)
     const D10_INTERCEPT = 3.985620;
     const D10_SLOPE = -0.003243;
+
+    // 실제 코랩 학습 완료된 거리별 단위중량 편차(%) 예측 모델 계수 (16코일 · 635점)
+    const PROFILE_MODEL_COEFFS = {
+      '500N D12': {
+        modelType: 'Ridge(alpha=1.0)',
+        intercept: 0.044714,
+        // [tail_exp_fast, tail_exp_slow, frac, frac_sq, frac_cu, head_exp, tail_dev, tail_dev_decay, temp_rel, torque_rel]
+        coef: [2.299852, -0.665318, 0.197657, -0.422978, -0.744343, 0.69795, 0.211138, 0.238681, -0.481486, -0.57778],
+        cv: { nCoils: 16, nPoints: 635, mae: 0.8576, hit05: 33.9, hit10: 61.9 }
+      },
+      'ALL_COMBINED': {
+        modelType: 'Ridge(alpha=1.0)',
+        intercept: 0.044714,
+        coef: [2.299852, -0.665318, 0.197657, -0.422978, -0.744343, 0.69795, 0.211138, 0.238681, -0.481486, -0.57778],
+        cv: { nCoils: 16, nPoints: 635, mae: 0.8576, hit05: 33.9, hit10: 61.9 }
+      }
+    };
 
     // 500N D12 18-coil cross-validation minimum deviation absolute residuals (%p)
     // Exact match count at ±0.5%p = 13/18 (72.2%), Exact MAE = 0.382%p
@@ -1034,6 +1111,116 @@
       return s.length % 2 !== 0 ? s[mid] : (s[mid - 1] + s[mid]) / 2;
     }
 
+    function findColIdx(headers, keywords) {
+      return headers.findIndex(h => {
+        const u = String(h || '').toUpperCase();
+        return keywords.every(k => u.includes(k.toUpperCase()));
+      });
+    }
+
+    /**
+     * 원본 인덱스 기준 COIL_LENGTH 증가구간(리셋 -100m 기준 분리)의
+     * 시작/끝 인덱스와 최대값을 반환합니다.
+     */
+    function extractRampBounds(rawLenArr) {
+      const valid = [];
+      for (let i = 0; i < rawLenArr.length; i++) {
+        if (typeof rawLenArr[i] === 'number' && !isNaN(rawLenArr[i])) {
+          valid.push({ idx: i, val: rawLenArr[i] });
+        }
+      }
+      if (valid.length < 5) return { startIdx: -1, endIdx: -1, rampMax: NaN };
+
+      let bestSpan = -1;
+      let best = { startIdx: -1, endIdx: -1, rampMax: NaN };
+      let segStart = 0;
+
+      for (let i = 1; i <= valid.length; i++) {
+        const isEnd = i === valid.length || (valid[i].val - valid[i - 1].val < -100);
+        if (isEnd) {
+          const seg = valid.slice(segStart, i);
+          if (seg.length >= 5) {
+            let minV = Infinity, maxV = -Infinity;
+            for (const p of seg) {
+              if (p.val < minV) minV = p.val;
+              if (p.val > maxV) maxV = p.val;
+            }
+            if (maxV - minV > bestSpan) {
+              bestSpan = maxV - minV;
+              best = { startIdx: seg[0].idx, endIdx: seg[seg.length - 1].idx, rampMax: maxV };
+            }
+          }
+          segStart = i;
+        }
+      }
+      return best;
+    }
+
+    /**
+     * 정상 압연 구간(startIdx ~ endIdx)에서 frac(0~1) 기준
+     * 정규화된 온도(temp_rel) 및 토크/전류(torque_rel) 시계열을 추출합니다.
+     */
+    function buildIbaRelProfile(rawLenArr, rawTempArr, rawTqArr, bounds) {
+      if (bounds.startIdx < 0 || isNaN(bounds.rampMax) || bounds.rampMax <= 100) {
+        return { tempPts: [], torquePts: [], hasTemp: false, hasTorque: false };
+      }
+
+      const tempRaw = [];
+      const tqRaw = [];
+      for (let i = bounds.startIdx; i <= bounds.endIdx; i++) {
+        const lv = rawLenArr[i];
+        if (typeof lv !== 'number' || isNaN(lv)) continue;
+        const frac = Math.min(1, Math.max(0, lv / bounds.rampMax));
+        const tv = rawTempArr[i];
+        if (typeof tv === 'number' && !isNaN(tv) && tv > 500) {
+          tempRaw.push({ frac, val: tv });
+        }
+        const qv = rawTqArr[i];
+        if (typeof qv === 'number' && !isNaN(qv)) {
+          tqRaw.push({ frac, val: qv });
+        }
+      }
+
+      let tempPts = [];
+      if (tempRaw.length >= 5) {
+        const tMed = computeMedian(tempRaw.map(p => p.val));
+        tempPts = tempRaw
+          .map(p => ({ frac: p.frac, val: Math.max(-3, Math.min(3, (p.val - tMed) / 50.0)) }))
+          .sort((a, b) => a.frac - b.frac);
+      }
+
+      let torquePts = [];
+      if (tqRaw.length >= 5) {
+        const qMed = computeMedian(tqRaw.map(p => p.val));
+        const denom = Math.abs(qMed) > 1e-3 ? Math.abs(qMed) : 1.0;
+        torquePts = tqRaw
+          .map(p => ({ frac: p.frac, val: Math.max(-3, Math.min(3, (p.val - qMed) / denom)) }))
+          .sort((a, b) => a.frac - b.frac);
+      }
+
+      return {
+        tempPts,
+        torquePts,
+        hasTemp: tempPts.length >= 5,
+        hasTorque: torquePts.length >= 5
+      };
+    }
+
+    function interpByFrac(pts, frac) {
+      if (!pts || !pts.length) return 0;
+      if (frac <= pts[0].frac) return pts[0].val;
+      if (frac >= pts[pts.length - 1].frac) return pts[pts.length - 1].val;
+      let lo = 0, hi = pts.length - 1;
+      while (lo + 1 < hi) {
+        const mid = (lo + hi) >> 1;
+        if (pts[mid].frac <= frac) lo = mid;
+        else hi = mid;
+      }
+      const span = pts[hi].frac - pts[lo].frac;
+      const t = span > 1e-9 ? (frac - pts[lo].frac) / span : 0;
+      return pts[lo].val + t * (pts[hi].val - pts[lo].val);
+    }
+
     async function handlePrimaryUpload(file) {
       try {
         const ext = file.name.split('.').pop().toLowerCase();
@@ -1124,7 +1311,11 @@
           if (k.includes('코일 ID') || k.includes('LOT')) { if (v) lot = v; }
           if (k.includes('선속')) { const n = parseFloat(v); if (!isNaN(n)) speed = n; }
           if (k.includes('꼬리') && k.includes('%')) { const n = parseFloat(v); if (!isNaN(n)) tailDev = n; }
-          if (k.includes('실중량') || k.includes('중량')) { const n = parseFloat(v); if (!isNaN(n) && n > 100) weight = n; }
+          // 단위중량(g/m)을 코일 실중량(kg)으로 오인식하지 않도록 '단위' 제외 및 500kg 이상만 반영
+          if ((k.includes('실중량') || k.includes('총중량') || (k.includes('중량') && !k.includes('단위')))) {
+            const n = parseFloat(v);
+            if (!isNaN(n) && n >= 500) weight = n;
+          }
           specText += ' ' + v.toUpperCase();
         }
       }
@@ -1141,6 +1332,7 @@
       let ibaLen = NaN;
       let fbRpm = NaN;
       let line = 'L2';
+      let ibaProfile = null;
       const ibaSheetName = sheets[2] || sheets.find(s => s.toUpperCase().includes('IBA'));
       if (ibaSheetName) {
         const raw = XLSX.utils.sheet_to_json(wb.Sheets[ibaSheetName], { header: 1, defval: null });
@@ -1155,32 +1347,43 @@
           line = rawHeaders.some(h => h.includes('L1.')) ? 'L1' : 'L2';
           const norm = rawHeaders.map(h => h.replace(/L1\./g, '.').replace(/L2\./g, '.'));
 
-          const lenIdx = norm.findIndex(h => h.includes('COIL_LENGTH'));
-          const tempIdx = norm.findIndex(h => h.includes('BAR_TEMP'));
-          const fbIdx = norm.findIndex(h => h.includes('FINISHING BLOCK Reference Speed'));
+          const lenIdx = findColIdx(norm, ['COIL_LENGTH']);
+          const tempIdx = findColIdx(norm, ['BAR_TEMP']);
+          const fbIdx = findColIdx(norm, ['FINISHING BLOCK Reference Speed']);
+          let tqIdx = findColIdx(norm, ['FINISHING', 'TORQUE']);
+          if (tqIdx < 0) tqIdx = findColIdx(norm, ['TORQUE']);
+          if (tqIdx < 0) tqIdx = findColIdx(norm, ['CURRENT']);
 
-          const lenSeries = [];
+          const rawLenArr = [];
+          const rawTempArr = [];
+          const rawTqArr = [];
           const fbActive = [];
           for (let i = dataIdx; i < raw.length; i++) {
             const row = raw[i];
             if (!row) continue;
-            if (lenIdx >= 0) {
-              const lv = parseFloat(row[lenIdx]);
-              if (!isNaN(lv)) lenSeries.push(lv);
-            }
+            const lv = lenIdx >= 0 ? parseFloat(row[lenIdx]) : NaN;
+            const tv = tempIdx >= 0 ? parseFloat(row[tempIdx]) : NaN;
+            const qv = tqIdx >= 0 ? parseFloat(row[tqIdx]) : NaN;
+            rawLenArr.push(lv);
+            rawTempArr.push(tv);
+            rawTqArr.push(qv);
             if (tempIdx >= 0 && fbIdx >= 0) {
-              const tv = parseFloat(row[tempIdx]);
               const fv = parseFloat(row[fbIdx]);
               if (!isNaN(tv) && tv > 500 && !isNaN(fv)) fbActive.push(fv);
             }
           }
-          ibaLen = extractRampMax(lenSeries);
+          const bounds = extractRampBounds(rawLenArr);
+          ibaLen = bounds.rampMax;
           fbRpm = computeMedian(fbActive);
+          ibaProfile = buildIbaRelProfile(rawLenArr, rawTempArr, rawTqArr, bounds);
         }
       }
 
-      const spec = (specText.includes('D10') || specText.includes('SD500')) ? 'SD500 D10' : '500N D12';
-      return { filename, lot, spec, line, ibaLen, fbRpm, speed, tailDev, weight, actualPoints };
+      // SD500N D12 등 강종에 'SD500'이 포함되어도 사이즈(D12/D10)를 최우선 판별
+      const spec = specText.includes('D12')
+        ? '500N D12'
+        : (specText.includes('D10') ? 'SD500 D10' : '500N D12');
+      return { filename, lot, spec, line, ibaLen, fbRpm, speed, tailDev, weight, actualPoints, ibaProfile };
     }
 
     function parseIbaTextFile(text, filename) {
@@ -1197,38 +1400,50 @@
       const line = rawHeaders.some(h => h.includes('L1.')) ? 'L1' : 'L2';
       const norm = rawHeaders.map(h => h.replace(/L1\./g, '.').replace(/L2\./g, '.'));
 
-      const lenIdx = norm.findIndex(h => h.includes('COIL_LENGTH'));
-      const tempIdx = norm.findIndex(h => h.includes('BAR_TEMP'));
-      const fbIdx = norm.findIndex(h => h.includes('FINISHING BLOCK Reference Speed'));
+      const lenIdx = findColIdx(norm, ['COIL_LENGTH']);
+      const tempIdx = findColIdx(norm, ['BAR_TEMP']);
+      const fbIdx = findColIdx(norm, ['FINISHING BLOCK Reference Speed']);
+      let tqIdx = findColIdx(norm, ['FINISHING', 'TORQUE']);
+      if (tqIdx < 0) tqIdx = findColIdx(norm, ['TORQUE']);
+      if (tqIdx < 0) tqIdx = findColIdx(norm, ['CURRENT']);
 
-      const lenSeries = [];
+      const rawLenArr = [];
+      const rawTempArr = [];
+      const rawTqArr = [];
       const fbActive = [];
       for (let i = headerIdx + 1; i < lines.length; i++) {
         const cols = lines[i].split(sep);
-        if (lenIdx >= 0) {
-          const lv = parseFloat(cols[lenIdx]);
-          if (!isNaN(lv)) lenSeries.push(lv);
-        }
+        const lv = lenIdx >= 0 ? parseFloat(cols[lenIdx]) : NaN;
+        const tv = tempIdx >= 0 ? parseFloat(cols[tempIdx]) : NaN;
+        const qv = tqIdx >= 0 ? parseFloat(cols[tqIdx]) : NaN;
+        rawLenArr.push(lv);
+        rawTempArr.push(tv);
+        rawTqArr.push(qv);
         if (tempIdx >= 0 && fbIdx >= 0) {
-          const tv = parseFloat(cols[tempIdx]);
           const fv = parseFloat(cols[fbIdx]);
           if (!isNaN(tv) && tv > 500 && !isNaN(fv)) fbActive.push(fv);
         }
       }
 
+      const bounds = extractRampBounds(rawLenArr);
+      const ibaProfile = buildIbaRelProfile(rawLenArr, rawTempArr, rawTqArr, bounds);
+
       const specText = filename.toUpperCase();
-      const spec = (specText.includes('D10') || specText.includes('SD500')) ? 'SD500 D10' : '500N D12';
+      const spec = specText.includes('D12')
+        ? '500N D12'
+        : (specText.includes('D10') ? 'SD500 D10' : '500N D12');
       return {
         filename,
         lot: filename.replace(/\.(txt|csv)$/i, ''),
         spec,
         line,
-        ibaLen: extractRampMax(lenSeries),
+        ibaLen: bounds.rampMax,
         fbRpm: computeMedian(fbActive),
         speed: NaN,
         tailDev: NaN,
         weight: NaN,
-        actualPoints: []
+        actualPoints: [],
+        ibaProfile
       };
     }
 
@@ -1249,19 +1464,41 @@
       };
     }
 
-    function generatePredictionCurve(totalLen, spec, tailDevInput) {
-      const steps = 24;
-      const tailStart = !isNaN(tailDevInput) ? tailDevInput : (spec === 'SD500 D10' ? 1.60 : 1.85);
-      const baseMin = spec === 'SD500 D10' ? -0.48 : -0.46;
+    /**
+     * 코랩에서 학습된 10개 피처 Ridge(alpha=1.0) 모델 계수를 그대로 적용해
+     * 거리별 단위중량 편차(%) 예측 곡선을 계산합니다.
+     */
+    function generatePredictionCurve(totalLen, spec, tailDevInput, ibaProfile) {
+      const model = PROFILE_MODEL_COEFFS[spec] || PROFILE_MODEL_COEFFS['ALL_COMBINED'];
+      const c = model.coef;
+      const tailDev = !isNaN(tailDevInput) ? tailDevInput : 0.0;
+      const steps = 41;
       const pts = [];
+
       for (let i = 0; i < steps; i++) {
         const frac = i / (steps - 1);
         const dist = frac * totalLen;
-        // Smooth physical profile: tail decay -> slight dip near 72% -> recovery near head
-        const tailDecay = tailStart * Math.exp(-7.5 * frac);
-        const dip = baseMin * Math.sin(Math.PI * Math.pow(frac, 0.85));
-        const val = tailDecay + dip;
-        pts.push({ x: dist, y: Number(val.toFixed(3)) });
+        const tempRel = (ibaProfile && ibaProfile.hasTemp) ? interpByFrac(ibaProfile.tempPts, frac) : 0.0;
+        const torqueRel = (ibaProfile && ibaProfile.hasTorque) ? interpByFrac(ibaProfile.torquePts, frac) : 0.0;
+
+        const feats = [
+          Math.exp(-10.0 * frac),          // tail_exp_fast
+          Math.exp(-3.0 * frac),           // tail_exp_slow
+          frac,                            // frac
+          frac * frac,                     // frac_sq
+          frac * frac * frac,              // frac_cu
+          Math.exp(-10.0 * (1.0 - frac)),  // head_exp
+          tailDev,                         // tail_dev
+          tailDev * Math.exp(-5.0 * frac), // tail_dev_decay
+          tempRel,                         // temp_rel
+          torqueRel                        // torque_rel
+        ];
+
+        let pred = model.intercept;
+        for (let k = 0; k < feats.length; k++) {
+          pred += c[k] * feats[k];
+        }
+        pts.push({ x: dist, y: Number(pred.toFixed(3)) });
       }
       return pts;
     }
@@ -1349,8 +1586,11 @@
         usedPredictionFallback = true;
       }
 
-      // Generate prediction curve
-      const predCurve = generatePredictionCurve(finalLen, spec, tailInput);
+      // Generate prediction curve using trained Ridge(alpha=1.0) profile model
+      const effectiveTailDev = !isNaN(tailInput)
+        ? tailInput
+        : (currentCoil.actualPoints && currentCoil.actualPoints.length > 0 ? currentCoil.actualPoints[0].y : 0.0);
+      const predCurve = generatePredictionCurve(finalLen, spec, effectiveTailDev, currentCoil.ibaProfile);
       currentCoil.predCurve = predCurve;
 
       const avgDev = predCurve.reduce((s, p) => s + p.y, 0) / predCurve.length;
@@ -1370,8 +1610,13 @@
       document.getElementById('res-spec-line').textContent = `${spec} · ${currentCoil.line}`;
 
       // Update Details Card
-      document.getElementById('detail-formula').textContent = calc.formulaText;
-      document.getElementById('detail-vars').textContent = `FB_RPM 중앙값 (BAR_TEMP > 500℃): ${isNaN(currentCoil.fbRpm) ? '미검출' : currentCoil.fbRpm.toFixed(2) + ' rpm'}`;
+      const profModel = PROFILE_MODEL_COEFFS[spec] || PROFILE_MODEL_COEFFS['ALL_COMBINED'];
+      const tempState = currentCoil.ibaProfile?.hasTemp ? '반영됨' : '미검출(0)';
+      const tqState = currentCoil.ibaProfile?.hasTorque ? '반영됨' : '미검출(0)';
+      document.getElementById('detail-formula').textContent =
+        `${calc.formulaText} · 거리별 곡선: ${profModel.modelType} (${profModel.cv.nCoils}코일 학습)`;
+      document.getElementById('detail-vars').textContent =
+        `FB_RPM: ${isNaN(currentCoil.fbRpm) ? '미검출' : currentCoil.fbRpm.toFixed(2) + ' rpm'} · IBA 온도(${tempState}) · 토크(${tqState})`;
 
       if (logToHistory) {
         sessionHistory.unshift({
@@ -1523,7 +1768,8 @@
           speed: 58.0,
           tailDev: 1.60,
           weight: 4012.0,
-          actualPoints: []
+          actualPoints: [],
+          ibaProfile: null
         };
         applyParsedCoil(sampleD10);
         showToast('SD500 D10 예시 코일(P133539A-07A)을 불러왔습니다.', 'success');
@@ -1541,7 +1787,8 @@
         speed: 42.5,
         tailDev: 1.85,
         weight: 4202.5,
-        actualPoints: ex.distances.map((d, i) => ({ x: i === ex.distances.length - 1 ? 4733.33 : d, y: ex.actual[i] }))
+        actualPoints: ex.distances.map((d, i) => ({ x: i === ex.distances.length - 1 ? 4733.33 : d, y: ex.actual[i] })),
+        ibaProfile: null
       };
       applyParsedCoil(sampleD12);
       showToast('500N D12 예시 코일(P147453A-6A)을 불러왔습니다.', 'success');
