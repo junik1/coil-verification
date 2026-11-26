@@ -1,2333 +1,543 @@
-<!DOCTYPE html>
-<html lang="ko">
-<head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>코일 단위중량·실길이 예측 알고리즘</title>
+"""
+코일 거리별 단위중량 편차(%) 자가 진화형 예측 모델 학습·검증 스크립트 (Google Colab용)
 
-  <!-- Google Fonts: Noto Sans KR & Inter -->
-  <link rel="preconnect" href="https://fonts.googleapis.com" />
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Noto+Sans+KR:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+핵심 개선 사항:
+1. 질량 보존 법칙(Mass Conservation) 강제 적용:
+   - 코일 실중량(kg) / 총 길이(m)로 계산된 코일 평균 편차(mean_dev)를 기준선으로 고정하고,
+     모델은 평균 대비 구간별 형상 변화(y - mean_dev)만 예측 후 적분 평균을 mean_dev에 정확히 일치시킵니다.
+2. 15개 물리·공정 피처 자동 추출:
+   - 꼬리부/선단부 다중 시정수 과도응답, 4차 다항 기저, 꼬리부 실측 앵커,
+     IBA 온도(BAR_TEMP)·온도구배·토크/전류(TORQUE/CURRENT)·선속(FB_RPM) 시계열 보간
+3. 다중 알고리즘 + 후진 피처 소거법(Backward Feature Selection) 자동 진화:
+   - Ridge(다중 alpha), BayesianRidge, HuberRegressor를 Leave-One-Coil-Out 교차검증(LOCO-CV)으로
+     자동 비교하고, 불필요한 피처를 제거하며 오차(MAE)가 가장 낮은 최적 모델과 잔차 보정곡선을 자동 선정합니다.
+4. 홈페이지(coil_verification_platform.html)에서 코드 수정 없이 바로 불러올 수 있는
+   'profile_model_coeffs.json' 파일을 자동 생성합니다.
+"""
 
-  <!-- Tailwind CSS CDN -->
-  <script src="https://cdn.tailwindcss.com"></script>
-  <script>
-    tailwind.config = {
-      theme: {
-        extend: {
-          fontFamily: {
-            sans: ['"Noto Sans KR"', 'Inter', 'sans-serif'],
-          },
-          colors: {
-            royal: {
-              50: '#EFF6FF',
-              100: '#DBEAFE',
-              600: '#2563EB',
-              700: '#1D4ED8',
-              800: '#1E40AF',
-            },
-          },
+import glob
+import json
+import os
+import warnings
+import numpy as np
+import pandas as pd
+from sklearn.linear_model import BayesianRidge, HuberRegressor, Ridge
+
+warnings.filterwarnings("ignore")
+
+# =============================================================================
+# 1. 설정 (엑셀 파일이 있는 폴더 경로 — 코랩 기본 업로드 경로는 ".")
+# =============================================================================
+DATA_DIR = "."  # 구글 드라이브 사용 시 예: "/content/drive/MyDrive/코일데이터"
+OUTPUT_JSON = "profile_model_coeffs.json"
+
+NOMINAL_KG_PER_M = {
+    "500N D12": 0.888,
+    "SD500 D10": 0.617,
+}
+
+FEATURE_NAMES = [
+    "tail_exp_fast",       # exp(-12 * frac) : 꼬리부 직후 급격한 과도응답
+    "tail_exp_mid",        # exp(-5 * frac)  : 초반부 중간 감쇠
+    "tail_exp_slow",       # exp(-2 * frac)  : 전반부 완만한 감쇠
+    "frac",                # 0 ~ 1           : 선형 기울기
+    "frac_sq",             # frac^2          : 2차 곡률
+    "frac_cu",             # frac^3          : 3차 곡률 (후반부 하강 패턴)
+    "frac_qu",             # frac^4          : 4차 곡률 (복합 S자 패턴)
+    "head_exp_fast",       # exp(-12*(1-frac)): 선단부 끝단 급변
+    "head_exp_slow",       # exp(-4*(1-frac)) : 선단부 진입부 변화
+    "tail_rel_fast",       # (tail_dev - mean_dev) * exp(-10 * frac) : 꼬리부 실측 앵커(단기)
+    "tail_rel_slow",       # (tail_dev - mean_dev) * exp(-3 * frac)  : 꼬리부 실측 앵커(장기)
+    "temp_rel",            # (BAR_TEMP - 코일중앙온도) / 50.0
+    "temp_grad",           # 거리 진행에 따른 온도 변화율
+    "torque_rel",          # (TORQUE - 코일중앙토크) / (|코일중앙토크| + 1e-6)
+    "speed_rel",           # (FB_RPM - 코일중앙속도) / (|코일중앙속도| + 1e-6)
+]
+
+
+# =============================================================================
+# 2. 유틸리티 및 엑셀 파싱 함수
+# =============================================================================
+def extract_ramp_segment(length_series: np.ndarray):
+    """
+    COIL_LENGTH 시계열에서 리셋(-100m 이상 급감)을 기준으로 구간을 나누고,
+    가장 길게 증가하는 정상 압연 구간의 (시작인덱스, 끝인덱스, 최대길이)를 반환합니다.
+    """
+    valid_idx = np.where(~np.isnan(length_series))[0]
+    if len(valid_idx) < 5:
+        return None, None, np.nan
+
+    vals = length_series[valid_idx]
+    breaks = np.where(np.diff(vals) < -100.0)[0]
+    starts = np.concatenate(([0], breaks + 1))
+    ends = np.concatenate((breaks, [len(vals) - 1]))
+
+    best_span = -1.0
+    best_range = (None, None, np.nan)
+    for s, e in zip(starts, ends):
+        seg = vals[s : e + 1]
+        if len(seg) < 5:
+            continue
+        span = float(np.nanmax(seg) - np.nanmin(seg))
+        if span > best_span:
+            best_span = span
+            best_range = (int(valid_idx[s]), int(valid_idx[e]), float(np.nanmax(seg)))
+    return best_range
+
+
+def find_col_index(headers, keywords, exclude_keywords=None):
+    """헤더 목록에서 키워드가 모두 포함된 첫 번째 컬럼 인덱스를 반환합니다."""
+    exclude_keywords = exclude_keywords or []
+    for idx, h in enumerate(headers):
+        hu = str(h).upper()
+        if all(k.upper() in hu for k in keywords) and not any(
+            ex.upper() in hu for ex in exclude_keywords
+        ):
+            return idx
+    return -1
+
+
+def parse_single_coil_excel(filepath: str):
+    """
+    단일 코일 엑셀(.xlsx)에서 코일 메타정보, 단위중량 실측 포인트, IBA 시계열을 추출합니다.
+    """
+    filename = os.path.basename(filepath)
+    xl = pd.ExcelFile(filepath)
+    sheets = xl.sheet_names
+
+    # --- 1) 시트1: 코일정보 ---
+    lot = os.path.splitext(filename)[0]
+    spec_text = filename.upper()
+    coil_weight_kg = np.nan
+    info_sheet = next((s for s in sheets if "코일정보" in s), sheets[0])
+    try:
+        df_info = xl.parse(info_sheet, header=None)
+        for _, row in df_info.iterrows():
+            if len(row) < 2:
+                continue
+            k = str(row.iloc[0]).strip()
+            v = str(row.iloc[1]).strip()
+            if ("코일 ID" in k or "LOT" in k.upper()) and v and v.lower() != "nan":
+                lot = v
+            if "실중량" in k or "총중량" in k or ("중량" in k and "단위" not in k):
+                try:
+                    w_val = float(v)
+                    if w_val >= 500.0:
+                        coil_weight_kg = w_val
+                except ValueError:
+                    pass
+            spec_text += " " + v.upper()
+    except Exception:
+        pass
+
+    # D12/D10 사이즈 우선 판별 (SD500N D12 오분류 방지)
+    if "D12" in spec_text:
+        spec = "500N D12"
+    elif "D10" in spec_text:
+        spec = "SD500 D10"
+    else:
+        spec = "500N D12"
+
+    # --- 2) 시트2: 단위중량실측 ---
+    wt_sheet = next(
+        (s for s in sheets if "단위중량" in s), sheets[1] if len(sheets) >= 2 else None
+    )
+    if wt_sheet is None:
+        return None
+
+    df_wt = xl.parse(wt_sheet)
+    dist_col = next((c for c in df_wt.columns if "Distance" in str(c)), None)
+    pct_col = next(
+        (c for c in df_wt.columns if "Kg/M" in str(c) and "%" in str(c)), None
+    )
+    if dist_col is None or pct_col is None:
+        return None
+
+    wt_clean = df_wt[[dist_col, pct_col]].apply(pd.to_numeric, errors="coerce").dropna()
+    wt_clean = wt_clean.sort_values(by=dist_col)
+    if len(wt_clean) < 5:
+        return None
+
+    distances = wt_clean[dist_col].to_numpy(dtype=float)
+    actual_pct = wt_clean[pct_col].to_numpy(dtype=float)
+    total_len = float(np.max(distances))
+    if total_len <= 100.0:
+        return None
+
+    frac_actual = np.clip(distances / total_len, 0.0, 1.0)
+    tail_dev = float(actual_pct[0])  # 꼬리부(0m 부근) 기준 편차
+
+    # 코일 실중량 기반 평균 편차(질량 보존 기준선) 계산
+    nom_kg_m = NOMINAL_KG_PER_M.get(spec, 0.888)
+    if not np.isnan(coil_weight_kg):
+        mean_dev = ((coil_weight_kg / total_len) / nom_kg_m - 1.0) * 100.0
+        has_scale_weight = True
+    else:
+        # NumPy 2.0+ 호환 사다리꼴 적분으로 실측 거리 평균 편차 계산 (np.trapz 제거 대응)
+        if len(frac_actual) > 1:
+            df_seg = np.diff(frac_actual)
+            span_f = float(frac_actual[-1] - frac_actual[0])
+            if span_f > 1e-6:
+                mean_dev = float(
+                    np.sum(0.5 * (actual_pct[:-1] + actual_pct[1:]) * df_seg) / span_f
+                )
+            else:
+                mean_dev = float(np.mean(actual_pct))
+        else:
+            mean_dev = float(np.mean(actual_pct))
+        has_scale_weight = False
+
+    tail_rel = tail_dev - mean_dev
+
+    # --- 3) 시트3: IBA 시계열 ---
+    temp_rel_at_pts = np.zeros_like(frac_actual)
+    temp_grad_at_pts = np.zeros_like(frac_actual)
+    torque_rel_at_pts = np.zeros_like(frac_actual)
+    speed_rel_at_pts = np.zeros_like(frac_actual)
+    has_iba = False
+
+    iba_sheet = sheets[2] if len(sheets) >= 3 else next(
+        (s for s in sheets if "IBA" in s.upper()), None
+    )
+    if iba_sheet is not None:
+        try:
+            raw_iba = xl.parse(iba_sheet, header=None)
+            if len(raw_iba) > 5 and raw_iba.shape[1] >= 2:
+                c0r0 = str(raw_iba.iloc[0, 0]).strip()
+                c0r1 = str(raw_iba.iloc[1, 0]).strip()
+                if c0r0 == "Time" and c0r1 == "time":
+                    header_idx, data_idx = 1, 3
+                elif any("[" in str(v) for v in raw_iba.iloc[1].values):
+                    header_idx, data_idx = 0, 2
+                else:
+                    header_idx, data_idx = 0, 1
+
+                raw_headers = [str(h).strip() for h in raw_iba.iloc[header_idx].values]
+                norm_headers = [
+                    h.replace("L1.", ".").replace("L2.", ".") for h in raw_headers
+                ]
+                data_df = raw_iba.iloc[data_idx:].reset_index(drop=True)
+
+                len_idx = find_col_index(norm_headers, ["COIL_LENGTH"])
+                temp_idx = find_col_index(norm_headers, ["BAR_TEMP"])
+                fb_idx = find_col_index(norm_headers, ["FINISHING BLOCK", "SPEED"])
+                if fb_idx < 0:
+                    fb_idx = find_col_index(norm_headers, ["SPEED"])
+
+                tq_idx = find_col_index(norm_headers, ["FINISHING", "TORQUE"])
+                if tq_idx < 0:
+                    tq_idx = find_col_index(norm_headers, ["TORQUE"])
+                if tq_idx < 0:
+                    tq_idx = find_col_index(norm_headers, ["CURRENT"])
+
+                if len_idx >= 0:
+                    len_arr = pd.to_numeric(
+                        data_df.iloc[:, len_idx], errors="coerce"
+                    ).to_numpy(dtype=float)
+                    s_idx, e_idx, ramp_max = extract_ramp_segment(len_arr)
+                    if s_idx is not None and ramp_max > 100.0:
+                        has_iba = True
+                        # 온도 및 온도 구배 보간 (중복 거리 0 나눗셈 방지)
+                        if temp_idx >= 0:
+                            seg_temp = pd.to_numeric(
+                                data_df.iloc[s_idx : e_idx + 1, temp_idx], errors="coerce"
+                            ).to_numpy(dtype=float)
+                            m_t = valid_f & ~np.isnan(seg_temp) & (seg_temp > 500.0)
+                            if np.sum(m_t) >= 5:
+                                order = np.argsort(seg_frac[m_t])
+                                t_med = float(np.median(seg_temp[m_t]))
+                                t_interp = np.interp(
+                                    frac_actual,
+                                    seg_frac[m_t][order],
+                                    seg_temp[m_t][order],
+                                )
+                                temp_rel_at_pts = np.clip((t_interp - t_med) / 50.0, -3.0, 3.0)
+                                if len(frac_actual) >= 2:
+                                    d_temp = np.gradient(temp_rel_at_pts)
+                                    d_frac = np.maximum(np.gradient(frac_actual), 1e-4)
+                                    temp_grad_at_pts = np.clip(d_temp / d_frac, -5.0, 5.0)
+                                else:
+                                    temp_grad_at_pts = np.zeros_like(temp_rel_at_pts)
+
+                        # 토크/전류 보간
+                        if tq_idx >= 0:
+                            seg_tq = pd.to_numeric(
+                                data_df.iloc[s_idx : e_idx + 1, tq_idx], errors="coerce"
+                            ).to_numpy(dtype=float)
+                            m_q = valid_f & ~np.isnan(seg_tq)
+                            if np.sum(m_q) >= 5:
+                                order = np.argsort(seg_frac[m_q])
+                                q_med = float(np.median(seg_tq[m_q]))
+                                denom = abs(q_med) if abs(q_med) > 1e-3 else 1.0
+                                q_interp = np.interp(
+                                    frac_actual,
+                                    seg_frac[m_q][order],
+                                    seg_tq[m_q][order],
+                                )
+                                torque_rel_at_pts = np.clip((q_interp - q_med) / denom, -3.0, 3.0)
+
+                        # 선속(FB_RPM) 보간
+                        if fb_idx >= 0:
+                            seg_fb = pd.to_numeric(
+                                data_df.iloc[s_idx : e_idx + 1, fb_idx], errors="coerce"
+                            ).to_numpy(dtype=float)
+                            m_s = valid_f & ~np.isnan(seg_fb) & (seg_fb > 10.0)
+                            if np.sum(m_s) >= 5:
+                                order = np.argsort(seg_frac[m_s])
+                                s_med = float(np.median(seg_fb[m_s]))
+                                denom_s = abs(s_med) if abs(s_med) > 1e-3 else 1.0
+                                s_interp = np.interp(
+                                    frac_actual,
+                                    seg_frac[m_s][order],
+                                    seg_fb[m_s][order],
+                                )
+                                speed_rel_at_pts = np.clip((s_interp - s_med) / denom_s, -3.0, 3.0)
+        except Exception:
+            pass
+    # --- 4) 15개 물리·공정 피처 행렬 구성 (NaN/Inf 원천 차단) ---
+    X = np.column_stack(
+        [
+            np.exp(-12.0 * frac_actual),
+            np.exp(-5.0 * frac_actual),
+            np.exp(-2.0 * frac_actual),
+            frac_actual,
+            frac_actual ** 2,
+            frac_actual ** 3,
+            frac_actual ** 4,
+            np.exp(-12.0 * (1.0 - frac_actual)),
+            np.exp(-4.0 * (1.0 - frac_actual)),
+            tail_rel * np.exp(-10.0 * frac_actual),
+            tail_rel * np.exp(-3.0 * frac_actual),
+            temp_rel_at_pts,
+            temp_grad_at_pts,
+            torque_rel_at_pts,
+            speed_rel_at_pts,
+        ]
+    )
+    X = np.nan_to_num(X, nan=0.0, posinf=0.0, neginf=0.0)
+
+    return {
+        "filename": filename,
+        "lot": lot,
+        "spec": spec,
+        "total_len": total_len,
+        "n_points": len(actual_pct),
+        "has_iba": has_iba,
+        "has_scale_weight": has_scale_weight,
+        "mean_dev": mean_dev,
+        "frac_actual": frac_actual,
+        "X": X,
+        "y_shape": actual_pct - mean_dev,
+        "y_raw": actual_pct,
+    }
+
+
+# =============================================================================
+# 3. 자가 진화형 모델 탐색 및 코일 단위 교차검증 (LOCO-CV)
+# =============================================================================
+def run_loco_cv(coils: list, model_fn, feat_mask: np.ndarray):
+    """질량 보존 보정(mean_dev 앵커)이 결합된 상태에서 Leave-One-Coil-Out CV를 수행합니다."""
+    all_abs_err = []
+    min_abs_err = []
+    grid_frac = np.linspace(0.0, 1.0, 41)
+    oof_grid_residuals = []
+
+    for i in range(len(coils)):
+        train_X = np.vstack([c["X"][:, feat_mask] for j, c in enumerate(coils) if j != i])
+        train_y = np.concatenate([c["y_shape"] for j, c in enumerate(coils) if j != i])
+        test_X = coils[i]["X"][:, feat_mask]
+        test_y_raw = coils[i]["y_raw"]
+        test_mean = coils[i]["mean_dev"]
+        test_frac = coils[i]["frac_actual"]
+
+        model = model_fn()
+        model.fit(train_X, train_y)
+        raw_shape = model.predict(test_X)
+
+        # 질량 보존 보정: 예측 곡선의 평균 편차를 실제 mean_dev에 정확히 일치
+        calibrated_shape = raw_shape - float(np.mean(raw_shape))
+        pred_y = test_mean + calibrated_shape
+
+        residual = test_y_raw - pred_y
+        abs_err = np.abs(residual)
+        all_abs_err.extend(abs_err.tolist())
+        min_abs_err.append(abs(float(np.min(pred_y)) - float(np.min(test_y_raw))))
+
+        # 41구간 표준 그리드에서 잔차 형태 기록
+        oof_grid_residuals.append(np.interp(grid_frac, test_frac, residual))
+
+    mae = float(np.mean(all_abs_err))
+    hit_05 = float(np.mean(np.array(all_abs_err) <= 0.5) * 100.0)
+    hit_10 = float(np.mean(np.array(all_abs_err) <= 1.0) * 100.0)
+    min_mae = float(np.mean(min_abs_err))
+    min_hit_05 = float(np.mean(np.array(min_abs_err) <= 0.5) * 100.0)
+    mean_residual_curve = np.mean(np.vstack(oof_grid_residuals), axis=0)
+
+    return {
+        "n_coils": len(coils),
+        "n_points": len(all_abs_err),
+        "point_mae_pctp": round(mae, 4),
+        "point_hit_05_pct": round(hit_05, 1),
+        "point_hit_10_pct": round(hit_10, 1),
+        "min_mae_pctp": round(min_mae, 4),
+        "min_hit_05_pct": round(min_hit_05, 1),
+        "residual_grid_41": [round(float(v), 5) for v in mean_residual_curve],
+    }
+
+
+def evaluate_and_fit_spec(coils: list, spec_name: str):
+    """
+    여러 회귀 알고리즘과 후진 피처 소거법(Backward Elimination)을 자동 탐색해
+    교차검증 오차(MAE)가 가장 낮은 최적의 모델 계수를 생성합니다.
+    """
+    if len(coils) < 2:
+        print(f"  [안내] {spec_name}: 코일 수({len(coils)}개)가 부족해 교차검증을 건너뜁니다.")
+        return None
+
+    candidates = {
+        "Ridge(alpha=0.2)": lambda: Ridge(alpha=0.2),
+        "Ridge(alpha=1.0)": lambda: Ridge(alpha=1.0),
+        "Ridge(alpha=3.0)": lambda: Ridge(alpha=3.0),
+        "Ridge(alpha=10.0)": lambda: Ridge(alpha=10.0),
+        "Ridge(alpha=30.0)": lambda: Ridge(alpha=30.0),
+        "BayesianRidge": lambda: BayesianRidge(),
+        "Huber(alpha=1.0)": lambda: HuberRegressor(alpha=1.0, max_iter=1500),
+    }
+
+    n_feats = len(FEATURE_NAMES)
+    full_mask = np.ones(n_feats, dtype=bool)
+
+    best_name = None
+    best_stats = None
+    best_mae = float("inf")
+
+    # 1단계: 전체 피처 기준 최적 알고리즘 탐색
+    for name, model_fn in candidates.items():
+        try:
+            stats = run_loco_cv(coils, model_fn, full_mask)
+            if stats["point_mae_pctp"] < best_mae:
+                best_mae = stats["point_mae_pctp"]
+                best_name = name
+                best_stats = stats
+        except Exception:
+            continue
+
+    if best_name is None or best_stats is None:
+        best_name = "Ridge(alpha=1.0)"
+        best_stats = run_loco_cv(coils, candidates[best_name], full_mask)
+        best_mae = best_stats["point_mae_pctp"]
+
+    # 2단계: 후진 피처 소거법(Backward Selection)으로 과적합 피처 자동 제거
+    active_mask = full_mask.copy()
+    while np.sum(active_mask) > 5:
+        improved = False
+        best_drop_idx = -1
+        for idx in np.where(active_mask)[0]:
+            trial_mask = active_mask.copy()
+            trial_mask[idx] = False
+            try:
+                trial_stats = run_loco_cv(coils, candidates[best_name], trial_mask)
+                if trial_stats["point_mae_pctp"] < best_mae - 0.002:
+                    best_mae = trial_stats["point_mae_pctp"]
+                    best_stats = trial_stats
+                    best_drop_idx = idx
+                    improved = True
+            except Exception:
+                continue
+        if improved and best_drop_idx >= 0:
+            active_mask[best_drop_idx] = False
+        else:
+            break
+
+    # 3단계: 선정된 최적 피처와 알고리즘으로 전체 코일 최종 학습
+    full_X = np.vstack([c["X"][:, active_mask] for c in coils])
+    full_y = np.concatenate([c["y_shape"] for c in coils])
+    final_model = candidates[best_name]()
+    final_model.fit(full_X, full_y)
+
+    # 탈락된 피처는 계수를 0.0으로 채워 15개 고정 길이 배열로 유지
+    full_coef = np.zeros(n_feats, dtype=float)
+    full_coef[active_mask] = final_model.coef_
+    selected_names = [FEATURE_NAMES[i] for i in np.where(active_mask)[0]]
+
+    print(f"\n[{spec_name}] 진화 탐색 최종 모델: {best_name} (코일 {len(coils)}개 / 총 {best_stats['n_points']}점)")
+    print(f"  - 선택된 유효 피처 ({len(selected_names)}/{n_feats}개): {', '.join(selected_names)}")
+    print(f"  - 거리별 포인트 평균 오차 (MAE) : {best_stats['point_mae_pctp']:.3f}%p")
+    print(f"  - 거리별 ±0.5%p 일치율          : {best_stats['point_hit_05_pct']:.1f}%")
+    print(f"  - 거리별 ±1.0%p 일치율          : {best_stats['point_hit_10_pct']:.1f}%")
+    print(f"  - 코일 최저값 평균 오차 (MAE)   : {best_stats['min_mae_pctp']:.3f}%p (±0.5%p 적중 {best_stats['min_hit_05_pct']:.1f}%)")
+
+    return {
+        "model_type": best_name,
+        "uses_mean_dev_anchor": True,
+        "feature_names": FEATURE_NAMES,
+        "selected_features": selected_names,
+        "intercept": round(float(final_model.intercept_), 6),
+        "coef": [round(float(v), 6) for v in full_coef],
+        "residual_grid_41": best_stats["residual_grid_41"],
+        "cv_metrics": {
+            "n_coils": best_stats["n_coils"],
+            "n_points": best_stats["n_points"],
+            "point_mae_pctp": best_stats["point_mae_pctp"],
+            "point_hit_05_pct": best_stats["point_hit_05_pct"],
+            "point_hit_10_pct": best_stats["point_hit_10_pct"],
+            "min_mae_pctp": best_stats["min_mae_pctp"],
+            "min_hit_05_pct": best_stats["min_hit_05_pct"],
         },
-      },
-    };
-  </script>
-
-  <!-- Chart.js 4.x CDN -->
-  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
-
-  <!-- SheetJS (xlsx) CDN -->
-  <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
-
-  <style>
-    body {
-      background-color: #FAFAFA;
-      color: #111827;
-      font-family: 'Noto Sans KR', 'Inter', sans-serif;
-    }
-    .view-section {
-      animation: fadeSlide 0.18s ease-out;
-    }
-    @keyframes fadeSlide {
-      from { opacity: 0; transform: translateY(4px); }
-      to { opacity: 1; transform: translateY(0); }
-    }
-    details > summary {
-      list-style: none;
-    }
-    details > summary::-webkit-details-marker {
-      display: none;
-    }
-    details[open] .chevron-icon {
-      transform: rotate(90deg);
-    }
-  </style>
-</head>
-<body class="min-h-screen flex flex-col antialiased selection:bg-blue-100 selection:text-blue-900">
-
-  <!-- Minimal Toast Container -->
-  <div id="toast-container" class="fixed bottom-5 right-5 z-50 flex flex-col gap-2 max-w-xs w-full px-4 sm:px-0 pointer-events-none"></div>
-
-  <!-- Prediction Fallback & Reliability Modal (Replaces alert()) -->
-  <div id="pred-fallback-modal" class="fixed inset-0 z-50 hidden items-center justify-center bg-gray-900/45 backdrop-blur-[2px] p-4" role="dialog" aria-modal="true" aria-labelledby="pred-modal-title">
-    <div class="bg-white rounded-2xl border border-gray-200 shadow-xl max-w-md w-full p-6 space-y-4">
-      <div class="flex items-start gap-3">
-        <div class="w-10 h-10 rounded-xl bg-royal-50 text-royal-600 flex items-center justify-center shrink-0">
-          <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2.2" viewBox="0 0 24 24">
-            <path stroke-linecap="round" stroke-linejoin="round" d="M11.25 11.25l.041-.02a.75.75 0 011.063.852l-.708 2.836a.75.75 0 001.063.853l.041-.021M21 12a9 9 0 11-18 0 9 9 0 0118 0zm-9-3.75h.008v.008H12V8.25z" />
-          </svg>
-        </div>
-        <div>
-          <h3 id="pred-modal-title" class="text-base font-extrabold text-gray-900">실측치 없음 · 예측 길이 자동 적용</h3>
-          <p id="pred-modal-desc" class="mt-1 text-xs sm:text-sm text-gray-600 leading-relaxed">
-            실측 총 길이 데이터가 없어 모델 예측치를 자동 입력했습니다.
-          </p>
-        </div>
-      </div>
-
-      <!-- Reliability Highlight Card -->
-      <div class="rounded-xl bg-royal-50/80 border border-blue-100 p-4 space-y-1.5">
-        <div class="flex items-center justify-between">
-          <span class="text-xs font-bold text-royal-700">적용 모델 신뢰도</span>
-          <span id="pred-modal-model" class="text-[11px] font-bold px-2 py-0.5 rounded-md bg-white text-royal-700 border border-blue-100">500N D12 (OGD)</span>
-        </div>
-        <div class="flex items-baseline gap-2">
-          <span id="pred-modal-confidence" class="text-2xl font-extrabold text-royal-600 tabular-nums">85.7%</span>
-          <span id="pred-modal-conf-basis" class="text-xs font-semibold text-gray-700">±15m 이내 적중률 (최근 7코일)</span>
-        </div>
-        <p id="pred-modal-conf-sub" class="text-[11px] text-gray-600 leading-relaxed">
-          평균 오차 9.05m · 전체 18코일 교차검증 기준 적중률 72.2% (평균 오차 18.47m)
-        </p>
-      </div>
-
-      <p class="text-[11px] text-gray-500 leading-relaxed">
-        추후 실측 길이가 확인되면 <strong>총 길이 (m)</strong> 칸에 직접 입력하거나 우측 <strong>실측 엑셀 추가</strong> 버튼으로 실측치를 반영할 수 있습니다.
-      </p>
-
-      <div class="flex justify-end pt-1">
-        <button onclick="closePredFallbackModal()" class="px-5 py-2.5 rounded-xl bg-royal-600 hover:bg-royal-700 text-white text-sm font-bold transition-colors cursor-pointer">
-          확인
-        </button>
-      </div>
-    </div>
-  </div>
-
-  <!-- Minimal Top Navigation Bar -->
-  <header class="bg-white border-b border-gray-200 sticky top-0 z-30">
-    <div class="max-w-6xl mx-auto px-4 sm:px-6 h-14 flex items-center justify-between">
-      <button onclick="switchView('home')" class="flex items-center gap-2 text-left cursor-pointer group">
-        <span class="w-2.5 h-2.5 rounded-full bg-royal-600"></span>
-        <span class="text-sm sm:text-base font-bold text-gray-900 tracking-tight group-hover:text-royal-700 transition-colors">
-          코일 단위중량·실길이 예측
-        </span>
-      </button>
-
-      <nav class="flex items-center gap-1 sm:gap-2" aria-label="화면 전환">
-        <button id="nav-home" onclick="switchView('home')" class="px-3.5 py-1.5 rounded-lg text-xs sm:text-sm font-bold text-royal-700 bg-royal-50 transition-colors cursor-pointer">
-          홈 (단위중량 안내)
-        </button>
-        <button id="nav-length" onclick="switchView('length')" class="px-3.5 py-1.5 rounded-lg text-xs sm:text-sm font-semibold text-gray-600 hover:text-gray-900 hover:bg-gray-100 transition-colors cursor-pointer">
-          실길이 모델 검증
-        </button>
-        <button id="nav-predict" onclick="switchView('predict')" class="px-3.5 py-1.5 rounded-lg text-xs sm:text-sm font-semibold text-gray-600 hover:text-gray-900 hover:bg-gray-100 transition-colors cursor-pointer">
-          코일 예측 시작
-        </button>
-      </nav>
-    </div>
-  </header>
-
-  <!-- Main Container -->
-  <main class="flex-1 max-w-6xl w-full mx-auto px-4 sm:px-6 py-8 sm:py-10">
-
-    <!-- =================================================================== -->
-    <!-- VIEW 1: 홈 화면 (단위중량 %p 기준 안내 및 실측 비교 결과)              -->
-    <!-- =================================================================== -->
-    <section id="view-home" class="view-section space-y-8">
-
-      <!-- Top 2-Column Hero (Left ~45%, Right ~55%) -->
-      <div class="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
-        <!-- Left Hero Copy -->
-        <div class="lg:col-span-5 pt-2">
-          <h1 class="text-3xl sm:text-4xl font-extrabold text-gray-900 tracking-tight leading-tight">
-            코일 단위중량·실길이 예측 알고리즘
-          </h1>
-          <p class="mt-3 text-base text-gray-600 leading-relaxed">
-            코일의 거리별 단위중량 편차(%)와 가장 가벼운 위치를 예측합니다. 실길이 보정 검증은 상단 <strong>실길이 모델 검증</strong> 탭에서 별도로 확인할 수 있습니다.
-          </p>
-
-          <div class="mt-6 flex flex-wrap items-center gap-2.5">
-            <button onclick="switchView('predict')" class="inline-flex items-center justify-center px-6 py-3 rounded-xl bg-royal-600 hover:bg-royal-700 text-white text-sm sm:text-base font-bold shadow-xs transition-colors cursor-pointer">
-              코일 예측 시작
-            </button>
-            <button onclick="switchView('length')" class="inline-flex items-center justify-center px-5 py-3 rounded-xl border border-gray-300 bg-white hover:bg-gray-50 text-gray-800 text-sm sm:text-base font-bold transition-colors cursor-pointer">
-              실길이 모델 검증 보기
-            </button>
-          </div>
-
-          <hr class="border-t border-gray-200 my-8" />
-
-          <div>
-            <h2 class="text-xs font-bold text-gray-500 uppercase tracking-wider mb-3">예측 방법</h2>
-            <ol class="space-y-2.5 text-sm sm:text-base font-bold text-gray-800">
-              <li>1. 데이터 입력 <span class="font-normal text-gray-500 text-sm">(엑셀 / IBA 업로드)</span></li>
-              <li>2. 길이·무게 변화 예측 <span class="font-normal text-gray-500 text-sm">(품목별 보정 모델 자동 적용)</span></li>
-              <li>3. 최저값·오차 확인</li>
-            </ol>
-          </div>
-        </div>
-
-        <!-- Right Card: 실측 비교 결과 (단위중량 %p 기준 통일) -->
-        <div class="lg:col-span-7 bg-white rounded-2xl border border-gray-200 p-6 shadow-xs">
-          <!-- Card Header + Model Segmented Toggle -->
-          <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-4">
-            <h2 class="text-base font-bold text-gray-900">단위중량 실측 비교 결과 (%p)</h2>
-            <div class="inline-flex rounded-xl bg-gray-100 p-1 self-start sm:self-auto" role="tablist" aria-label="단위중량 검증 품목 선택">
-              <button id="model-tab-d12" onclick="selectHomeModel('D12')" class="px-3 py-1.5 rounded-lg text-xs font-bold bg-white text-royal-700 shadow-xs transition-all cursor-pointer">
-                500N D12
-              </button>
-              <button id="model-tab-d10" onclick="selectHomeModel('D10')" class="px-3 py-1.5 rounded-lg text-xs font-semibold text-gray-500 hover:text-gray-800 transition-all cursor-pointer">
-                SD500 D10
-              </button>
-            </div>
-          </div>
-
-          <!-- Active Model Subtitle Badge -->
-          <div class="mb-4">
-            <span id="home-model-badge" class="inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-bold bg-royal-50 text-royal-700 border border-blue-100">
-              500N D12 · 온라인 후버 자동보정 (OGD)
-            </span>
-          </div>
-
-          <!-- Tolerance Stepper -->
-          <div class="mb-5">
-            <label id="home-stepper-label" class="block text-xs font-semibold text-gray-600 mb-2">
-              단위중량 최저값 일치 판정 기준 (18코일 교차검증)
-            </label>
-            <div class="flex items-center gap-2">
-              <div class="flex-1 flex items-center justify-between border border-gray-300 rounded-xl px-3 py-2 bg-white">
-                <button onclick="stepTolerance(-1)" aria-label="기준 감소" class="w-7 h-7 flex items-center justify-center rounded-lg text-gray-600 hover:bg-gray-100 font-bold text-base cursor-pointer">−</button>
-                <span id="tol-input-display" class="text-sm font-bold text-gray-900 tabular-nums">± 0.5 %p</span>
-                <button onclick="stepTolerance(1)" aria-label="기준 증가" class="w-7 h-7 flex items-center justify-center rounded-lg text-gray-600 hover:bg-gray-100 font-bold text-base cursor-pointer">+</button>
-              </div>
-              <button onclick="applyTolerance()" class="px-4 py-2.5 rounded-xl border border-gray-300 bg-white hover:bg-gray-50 text-sm font-semibold text-gray-800 transition-colors cursor-pointer">
-                적용
-              </button>
-            </div>
-          </div>
-
-          <hr class="border-gray-100 my-5" />
-
-          <!-- Match Rate KPI -->
-          <div>
-            <p id="home-kpi-label" class="text-xs font-semibold text-gray-600">실측 대비 예측 일치율 (18코일)</p>
-            <div class="mt-1 flex items-baseline gap-1">
-              <span id="home-match-rate" class="text-4xl font-extrabold text-royal-600 tracking-tight tabular-nums">72.2</span>
-              <span class="text-xl font-bold text-royal-600">%</span>
-            </div>
-            <p id="home-match-caption" class="mt-1.5 text-xs text-gray-500">
-              실측과 예측의 차이가 ±0.5%p 이내인 비율 (13/18코일 · 현장 목표 70% 달성)
-            </p>
-          </div>
-
-          <hr class="border-gray-100 my-5" />
-
-          <!-- Separated, Crystal-Clear Metric Rows -->
-          <div id="home-metric-rows" class="divide-y divide-gray-100 text-xs sm:text-sm">
-            <!-- Populated dynamically by updateHomeView() -->
-          </div>
-
-          <hr class="border-gray-100 my-4" />
-
-          <!-- Expandable Details -->
-          <details class="group">
-            <summary class="flex items-center gap-1.5 text-xs font-semibold text-gray-600 hover:text-gray-900 cursor-pointer select-none py-1">
-              <span class="chevron-icon inline-block transition-transform duration-150 text-[10px]">▶</span>
-              <span>검증 상세 보기</span>
-            </summary>
-            <div id="home-details-body" class="mt-3 pt-3 border-t border-gray-100 space-y-3 text-xs text-gray-600 leading-relaxed">
-              <!-- Populated dynamically by updateHomeView() -->
-            </div>
-          </details>
-        </div>
-      </div>
-
-      <!-- Bottom Full-Width Card: 판정 범위 예시 (상단 모델 토글과 실시간 연동) -->
-      <div class="bg-white rounded-2xl border border-gray-200 p-6 shadow-xs">
-        <div class="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-4">
-          <div>
-            <h2 id="ex-title" class="text-base sm:text-lg font-bold text-gray-900">판정 범위 예시 (500N D12 · OGD)</h2>
-            <p id="ex-subtitle" class="text-xs text-gray-500 mt-1">
-              P147453A-6A · 실측 4,733.3m · OGD 예측 4,737.3m (+3.99m)
-            </p>
-          </div>
-
-          <div class="flex items-center gap-6">
-            <div class="text-left md:text-right">
-              <p id="ex-stat1-label" class="text-[11px] font-medium text-gray-500">이 예시 코일의 일치</p>
-              <p id="ex-stat1-val" class="text-sm font-extrabold text-royal-600 tabular-nums mt-0.5">26/32점 · 81.3%</p>
-            </div>
-            <div class="text-left md:text-right">
-              <p id="ex-stat2-label" class="text-[11px] font-medium text-gray-500">최저값 오차</p>
-              <p id="ex-stat2-val" class="text-sm font-extrabold text-gray-900 tabular-nums mt-0.5">+0.17%p</p>
-            </div>
-          </div>
-        </div>
-
-        <!-- Custom Legend -->
-        <div id="ex-legend-row" class="flex flex-wrap items-center gap-x-5 gap-y-2 text-xs text-gray-600 mb-3"></div>
-
-        <!-- Y-Axis Label -->
-        <p id="ex-yaxis-label" class="text-[11px] font-medium text-gray-500 mb-1">기준 대비 단위중량 편차 (%)</p>
-
-        <!-- Chart Canvas -->
-        <div class="relative h-72 sm:h-80 w-full">
-          <canvas id="homeExampleChart"></canvas>
-        </div>
-      </div>
-    </section>
-
-    <!-- =================================================================== -->
-    <!-- VIEW 2: 실길이 모델 검증 탭 (500N D12 OGD / SD500 D10 FB-RPM · m 기준) -->
-    <!-- =================================================================== -->
-    <section id="view-length" class="view-section hidden space-y-8">
-      <!-- Top 2-Column Header + Length Model Verification Card -->
-      <div class="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
-        <!-- Left Description -->
-        <div class="lg:col-span-5 pt-2">
-          <span class="inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-bold bg-royal-50 text-royal-700 border border-blue-100 mb-3">
-            실길이 보정 전용 검증 (단위: m)
-          </span>
-          <h1 class="text-2xl sm:text-3xl font-extrabold text-gray-900 tracking-tight leading-tight">
-            코일 실길이 예측 모델 검증
-          </h1>
-          <p class="mt-3 text-sm sm:text-base text-gray-600 leading-relaxed">
-            IBA 원본 길이의 편차를 품목별 보정 모델(<strong>500N D12 OGD</strong> · <strong>SD500 D10 FB-RPM</strong>)로 보정한 실측 검증 결과입니다.
-          </p>
-
-          <div class="mt-6 space-y-3">
-            <div class="bg-white rounded-xl border border-gray-200 p-4 shadow-xs">
-              <p class="text-xs font-bold text-royal-700">500N D12 · 온라인 후버 자동보정 (OGD)</p>
-              <p class="mt-1 text-xs text-gray-600 leading-relaxed">
-                최근 7코일 평균 오차 <strong>9.05m</strong> (±15m 적중 <strong>85.7%</strong>), 전체 18코일 교차검증 평균 오차 <strong>18.47m</strong> (IBA 23.64m 대비 -21.9%).
-              </p>
-            </div>
-            <div class="bg-white rounded-xl border border-gray-200 p-4 shadow-xs">
-              <p class="text-xs font-bold text-royal-700">SD500 D10 · 피니싱 블록 RPM 비율 보정</p>
-              <p class="mt-1 text-xs text-gray-600 leading-relaxed">
-                13코일 순차검증 평균 오차 <strong>49.21m</strong> (IBA 119.83m 대비 <strong>-58.9%</strong>), 중앙값 오차 <strong>27.14m</strong>, 상관계수 <strong>r = 0.923</strong>.
-              </p>
-            </div>
-          </div>
-
-          <div class="mt-6">
-            <button onclick="switchView('predict')" class="inline-flex items-center justify-center px-6 py-3 rounded-xl bg-royal-600 hover:bg-royal-700 text-white text-sm font-bold shadow-xs transition-colors cursor-pointer">
-              코일 예측 화면으로 이동
-            </button>
-          </div>
-        </div>
-
-        <!-- Right Card: 실길이 실측 비교 결과 (m 기준 통일) -->
-        <div class="lg:col-span-7 bg-white rounded-2xl border border-gray-200 p-6 shadow-xs">
-          <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-4">
-            <h2 class="text-base font-bold text-gray-900">실길이 실측 비교 결과 (m)</h2>
-            <div class="inline-flex rounded-xl bg-gray-100 p-1 self-start sm:self-auto" role="tablist" aria-label="실길이 검증 모델 선택">
-              <button id="len-tab-d12" onclick="selectLengthModel('D12')" class="px-3 py-1.5 rounded-lg text-xs font-bold bg-white text-royal-700 shadow-xs transition-all cursor-pointer">
-                500N D12 (OGD)
-              </button>
-              <button id="len-tab-d10" onclick="selectLengthModel('D10')" class="px-3 py-1.5 rounded-lg text-xs font-semibold text-gray-500 hover:text-gray-800 transition-all cursor-pointer">
-                SD500 D10 (FB-RPM)
-              </button>
-            </div>
-          </div>
-
-          <div class="mb-4">
-            <span id="len-model-badge" class="inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-bold bg-royal-50 text-royal-700 border border-blue-100">
-              500N D12 · 온라인 후버 자동보정 (OGD)
-            </span>
-          </div>
-
-          <!-- Length Tolerance Stepper (m) -->
-          <div class="mb-5">
-            <label id="len-stepper-label" class="block text-xs font-semibold text-gray-600 mb-2">
-              실길이 일치 판정 기준 (후반 검증 7코일)
-            </label>
-            <div class="flex items-center gap-2">
-              <div class="flex-1 flex items-center justify-between border border-gray-300 rounded-xl px-3 py-2 bg-white">
-                <button onclick="stepLengthTolerance(-1)" aria-label="길이 기준 감소" class="w-7 h-7 flex items-center justify-center rounded-lg text-gray-600 hover:bg-gray-100 font-bold text-base cursor-pointer">−</button>
-                <span id="len-tol-display" class="text-sm font-bold text-gray-900 tabular-nums">± 15 m</span>
-                <button onclick="stepLengthTolerance(1)" aria-label="길이 기준 증가" class="w-7 h-7 flex items-center justify-center rounded-lg text-gray-600 hover:bg-gray-100 font-bold text-base cursor-pointer">+</button>
-              </div>
-              <button onclick="applyLengthTolerance()" class="px-4 py-2.5 rounded-xl border border-gray-300 bg-white hover:bg-gray-50 text-sm font-semibold text-gray-800 transition-colors cursor-pointer">
-                적용
-              </button>
-            </div>
-          </div>
-
-          <hr class="border-gray-100 my-5" />
-
-          <!-- Match Rate KPI -->
-          <div>
-            <p id="len-kpi-label" class="text-xs font-semibold text-gray-600">실측 대비 예측 일치율 (최근 7코일)</p>
-            <div class="mt-1 flex items-baseline gap-1">
-              <span id="len-match-rate" class="text-4xl font-extrabold text-royal-600 tracking-tight tabular-nums">85.7</span>
-              <span class="text-xl font-bold text-royal-600">%</span>
-            </div>
-            <p id="len-match-caption" class="mt-1.5 text-xs text-gray-500">
-              실측과 예측의 차이가 ±15m 이내인 비율 (6/7코일 · 현장 목표 70% 달성)
-            </p>
-          </div>
-
-          <hr class="border-gray-100 my-5" />
-
-          <!-- Separated Length Metrics -->
-          <div id="len-metric-rows" class="divide-y divide-gray-100 text-xs sm:text-sm"></div>
-
-          <hr class="border-gray-100 my-4" />
-
-          <!-- Expandable Formula & Table Details -->
-          <details class="group">
-            <summary class="flex items-center gap-1.5 text-xs font-semibold text-gray-600 hover:text-gray-900 cursor-pointer select-none py-1">
-              <span class="chevron-icon inline-block transition-transform duration-150 text-[10px]">▶</span>
-              <span>실길이 보정식 및 검증 상세 보기</span>
-            </summary>
-            <div id="len-details-body" class="mt-3 pt-3 border-t border-gray-100 space-y-3 text-xs text-gray-600 leading-relaxed"></div>
-          </details>
-        </div>
-      </div>
-
-      <!-- Bottom Full-Width Card: 실길이 검증 차트 -->
-      <div class="bg-white rounded-2xl border border-gray-200 p-6 shadow-xs">
-        <div class="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-4">
-          <div>
-            <h2 id="len-chart-title" class="text-base sm:text-lg font-bold text-gray-900">500N D12 실길이 모델별 평균 오차(MAE) 및 적중 비교</h2>
-            <p id="len-chart-subtitle" class="text-xs text-gray-500 mt-1">
-              생산일 교차검증(18코일) 및 시간순 후반 검증(7코일) · IBA 원본 대비 OGD 자동보정 효과
-            </p>
-          </div>
-
-          <div class="flex items-center gap-6">
-            <div class="text-left md:text-right">
-              <p id="len-stat1-label" class="text-[11px] font-medium text-gray-500">기준 이내 적중</p>
-              <p id="len-stat1-val" class="text-sm font-extrabold text-royal-600 tabular-nums mt-0.5">6/7코일 · 85.7%</p>
-            </div>
-            <div class="text-left md:text-right">
-              <p id="len-stat2-label" class="text-[11px] font-medium text-gray-500">평균 오차 (MAE)</p>
-              <p id="len-stat2-val" class="text-sm font-extrabold text-gray-900 tabular-nums mt-0.5">9.05m</p>
-            </div>
-          </div>
-        </div>
-
-        <div id="len-legend-row" class="flex flex-wrap items-center gap-x-5 gap-y-2 text-xs text-gray-600 mb-3"></div>
-        <p id="len-yaxis-label" class="text-[11px] font-medium text-gray-500 mb-1">실측 대비 길이 오차 (m)</p>
-
-        <div class="relative h-72 sm:h-80 w-full">
-          <canvas id="lengthVerifyChart"></canvas>
-        </div>
-      </div>
-    </section>
-
-    <!-- =================================================================== -->
-    <!-- VIEW 3: 코일 예측 화면 (작업자 업로드 및 실시간 예측)                   -->
-    <!-- =================================================================== -->
-    <section id="view-predict" class="view-section hidden">
-      <div class="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
-
-        <!-- LEFT SIDEBAR (lg:col-span-3, 3 stacked cards) -->
-        <aside class="lg:col-span-3 space-y-4">
-          <!-- Card 1: 파일 업로드 -->
-          <div class="bg-white rounded-2xl border border-gray-200 p-5 shadow-xs">
-            <h2 class="text-sm font-bold text-gray-900 mb-3">파일 업로드</h2>
-            <input id="iba-file-input" type="file" accept=".xlsx,.xls,.txt,.csv" class="hidden" />
-            <button onclick="document.getElementById('iba-file-input').click()" class="w-full py-2.5 px-4 rounded-xl bg-royal-600 hover:bg-royal-700 text-white text-sm font-bold flex items-center justify-center gap-2 transition-colors cursor-pointer">
-              <svg class="w-4 h-4 shrink-0" fill="none" stroke="currentColor" stroke-width="2.2" viewBox="0 0 24 24">
-                <path stroke-linecap="round" stroke-linejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5m-13.5-9L12 3m0 0l4.5 4.5M12 3v13.5" />
-              </svg>
-              <span>엑셀 / IBA TXT 업로드</span>
-            </button>
-            <p id="upload-status-text" class="mt-2.5 text-xs text-gray-500 truncate">
-              아직 업로드한 파일이 없습니다.
-            </p>
-          </div>
-
-          <!-- Card 2: 작업자 입력 -->
-          <div class="bg-white rounded-2xl border border-gray-200 p-5 shadow-xs">
-            <h2 class="text-sm font-bold text-royal-600 mb-3">작업자 입력</h2>
-            <label for="inp-tail-dev" class="block text-xs font-semibold text-gray-700 mb-1.5">
-              꼬리부 단위중량 편차 (%) · 선택
-            </label>
-            <input id="inp-tail-dev" type="number" step="0.01" placeholder="직접 입력 · 예: 1.93" oninput="onWorkerInputChange()" class="w-full rounded-xl border border-gray-300 px-3 py-2 text-sm text-gray-900 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-royal-600" />
-          </div>
-
-          <!-- Card 3: 자동 입력 정보 -->
-          <div class="bg-white rounded-2xl border border-gray-200 p-5 shadow-xs space-y-3.5">
-            <h2 class="text-sm font-bold text-gray-900">자동 입력 정보</h2>
-
-            <div>
-              <label for="inp-lot" class="block text-xs font-semibold text-gray-600 mb-1">LOT 번호</label>
-              <input id="inp-lot" type="text" placeholder="업로드 후 자동 입력" class="w-full rounded-xl border border-gray-300 px-3 py-2 text-sm text-gray-900 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-royal-600" />
-            </div>
-
-            <div>
-              <label for="inp-spec" class="block text-xs font-semibold text-gray-600 mb-1">강종·사이즈</label>
-              <select id="inp-spec" onchange="onSpecChange()" class="w-full rounded-xl border border-gray-300 bg-white px-3 py-2 text-sm font-semibold text-gray-900 focus:outline-none focus:ring-2 focus:ring-royal-600">
-                <option value="500N D12">500N D12</option>
-                <option value="SD500 D10">SD500 D10</option>
-              </select>
-            </div>
-
-            <div>
-              <div class="flex items-center justify-between mb-1">
-                <label for="inp-length" class="block text-xs font-semibold text-gray-600">총 길이 (m)</label>
-                <span id="length-source-badge" class="hidden text-[10px] font-bold px-2 py-0.5 rounded-md"></span>
-              </div>
-              <input id="inp-length" type="number" step="0.01" placeholder="업로드 후 자동 입력" oninput="onManualLengthInput()" onblur="onLengthInputBlur()" class="w-full rounded-xl border border-gray-300 px-3 py-2 text-sm text-gray-900 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-royal-600" />
-            </div>
-
-            <div>
-              <label for="inp-weight" class="block text-xs font-semibold text-gray-600 mb-1">코일 실중량 (kg)</label>
-              <input id="inp-weight" type="number" step="0.1" placeholder="업로드 후 자동 입력" class="w-full rounded-xl border border-gray-300 px-3 py-2 text-sm text-gray-900 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-royal-600" />
-            </div>
-
-            <div>
-              <label for="inp-speed" class="block text-xs font-semibold text-gray-600 mb-1">선속 (m/s) · 선택</label>
-              <input id="inp-speed" type="number" step="0.1" placeholder="선택 입력" class="w-full rounded-xl border border-gray-300 px-3 py-2 text-sm text-gray-900 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-royal-600" />
-            </div>
-
-            <div class="pt-1">
-              <button onclick="resetPredictView()" class="w-full py-2.5 px-4 rounded-xl border border-gray-300 bg-white hover:bg-gray-50 text-xs sm:text-sm font-semibold text-gray-700 flex items-center justify-center gap-1.5 transition-colors cursor-pointer">
-                <span>↻</span>
-                <span>입력 초기화</span>
-              </button>
-            </div>
-          </div>
-        </aside>
-
-        <!-- RIGHT MAIN AREA (lg:col-span-9, 3 stacked cards) -->
-        <div class="lg:col-span-9 space-y-5">
-
-          <!-- Card 1: 거리별 단위중량 편차 예측 범위 -->
-          <div class="bg-white rounded-2xl border border-gray-200 p-6 shadow-xs">
-            <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-2 mb-4">
-              <h2 class="text-base font-bold text-gray-900">거리별 단위중량 편차 예측 범위</h2>
-              <span id="pred-tol-badge" class="hidden text-xs font-semibold text-royal-700 bg-royal-50 px-2.5 py-1 rounded-lg self-start sm:self-auto">
-                판정 범위 ±0.5%p
-              </span>
-            </div>
-
-            <!-- Empty State (Before Upload) -->
-            <div id="predict-empty-state" class="border border-dashed border-gray-300 rounded-xl bg-gray-50/50 min-h-[360px] flex flex-col items-center justify-center p-6 text-center">
-              <p class="text-sm text-gray-500 font-medium">
-                IBA를 업로드하면 예측 그래프를 표시합니다.
-              </p>
-              <div class="mt-3 flex items-center gap-3">
-                <button onclick="loadSampleCoilIntoPredict('D12')" class="text-xs font-semibold text-royal-600 hover:text-royal-800 underline underline-offset-4 transition-colors cursor-pointer">
-                  500N D12 예시 미리보기
-                </button>
-                <span class="text-gray-300">|</span>
-                <button onclick="loadSampleCoilIntoPredict('D10')" class="text-xs font-semibold text-royal-600 hover:text-royal-800 underline underline-offset-4 transition-colors cursor-pointer">
-                  SD500 D10 예시 미리보기
-                </button>
-              </div>
-            </div>
-
-            <!-- Loaded State (After Upload / Sample) -->
-            <div id="predict-loaded-state" class="hidden space-y-4">
-              <!-- Compact KPI Result Strip -->
-              <div class="grid grid-cols-2 sm:grid-cols-4 gap-3 bg-gray-50 rounded-xl p-3.5 border border-gray-200/80 text-xs">
-                <div>
-                  <span class="text-gray-500 font-medium">보정 예측 길이</span>
-                  <div class="mt-0.5 flex items-center gap-1.5">
-                    <span id="res-pred-len" class="text-base font-extrabold text-royal-700 tabular-nums">-</span>
-                    <span id="res-model-tag" class="px-1.5 py-0.5 rounded bg-royal-100 text-royal-800 text-[10px] font-bold">-</span>
-                  </div>
-                </div>
-                <div>
-                  <span class="text-gray-500 font-medium">IBA 원본 길이</span>
-                  <p id="res-iba-len" class="mt-0.5 text-base font-bold text-gray-800 tabular-nums">-</p>
-                </div>
-                <div>
-                  <span class="text-gray-500 font-medium">예측 최저 편차</span>
-                  <p id="res-pred-min" class="mt-0.5 text-base font-extrabold text-gray-900 tabular-nums">-</p>
-                </div>
-                <div>
-                  <span class="text-gray-500 font-medium">강종 · 라인</span>
-                  <p id="res-spec-line" class="mt-0.5 text-sm font-bold text-gray-800">-</p>
-                </div>
-              </div>
-
-              <!-- Legend Row -->
-              <div class="flex flex-wrap items-center gap-x-5 gap-y-2 text-xs text-gray-600">
-                <span class="inline-flex items-center gap-1.5 font-medium text-royal-700">
-                  <span class="w-3 h-3 rounded-xs bg-blue-200 border border-blue-300 inline-block"></span>
-                  <span id="pred-legend-band">판정 범위 ±0.5%p</span>
-                </span>
-                <span class="inline-flex items-center gap-1.5"><span class="w-4 h-0.5 bg-royal-600 inline-block"></span>예측값</span>
-                <span class="inline-flex items-center gap-1.5"><span class="w-4 h-0.5 bg-gray-700 inline-block"></span>실측값</span>
-                <span class="inline-flex items-center gap-1.5 text-royal-600 font-medium"><span class="w-2.5 h-2.5 rounded-full bg-royal-600 inline-block"></span>기준 이내</span>
-                <span class="inline-flex items-center gap-1.5 text-red-600 font-medium"><span class="w-2.5 h-2.5 rounded-full bg-red-600 inline-block"></span>기준 밖</span>
-              </div>
-
-              <!-- Main Prediction Chart Canvas -->
-              <div class="relative h-72 sm:h-80 w-full">
-                <canvas id="predictMainChart"></canvas>
-              </div>
-            </div>
-          </div>
-
-          <!-- Card 2: 이 코일의 실측 비교 -->
-          <div class="bg-white rounded-2xl border border-gray-200 p-6 shadow-xs">
-            <p class="text-xs font-bold text-royal-600">이 코일의 실측 비교</p>
-            <p id="actual-compare-status" class="mt-1.5 text-base sm:text-lg font-extrabold text-gray-900">
-              실측 0점 · 실측 데이터가 없습니다
-            </p>
-
-            <!-- 길이 예측치 정확도 비교 박스 (실측 데이터 존재 시 표시) -->
-            <div id="actual-length-compare" class="hidden mt-3.5 rounded-xl bg-gray-50 border border-gray-200/80 p-4">
-              <div class="flex flex-wrap items-center justify-between gap-2 mb-2.5">
-                <span class="text-xs font-bold text-gray-700">실길이 예측 정확도 검증</span>
-                <span id="act-len-badge" class="text-[11px] font-bold px-2.5 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200">
-                  ±15m 이내 적중
-                </span>
-              </div>
-              <div class="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs">
-                <div>
-                  <span class="text-gray-500 font-medium">길이 예측 정확도</span>
-                  <p id="act-len-accuracy" class="mt-0.5 text-base font-extrabold text-royal-600 tabular-nums">-</p>
-                </div>
-                <div>
-                  <span class="text-gray-500 font-medium">모델 예측 길이</span>
-                  <p id="act-len-pred" class="mt-0.5 text-sm font-bold text-gray-900 tabular-nums">-</p>
-                </div>
-                <div>
-                  <span class="text-gray-500 font-medium">실측 총 길이</span>
-                  <p id="act-len-actual" class="mt-0.5 text-sm font-bold text-gray-900 tabular-nums">-</p>
-                </div>
-                <div>
-                  <span class="text-gray-500 font-medium">예측 오차 (예측−실측)</span>
-                  <p id="act-len-diff" class="mt-0.5 text-sm font-extrabold text-gray-900 tabular-nums">-</p>
-                </div>
-              </div>
-
-              <!-- IBA 원본 vs 보정 모델 우위 비교 -->
-              <div id="act-iba-compare-wrap" class="hidden mt-3.5 pt-3.5 border-t border-gray-200/80 space-y-2.5">
-                <div id="act-iba-verdict" class="flex flex-wrap items-center justify-between gap-2 rounded-lg px-3 py-2 text-xs font-bold bg-royal-50 text-royal-800 border border-blue-100">
-                  <span id="act-iba-verdict-text">비교 결과 계산 중...</span>
-                  <span id="act-iba-verdict-delta" class="tabular-nums">-</span>
-                </div>
-                <div class="grid grid-cols-1 sm:grid-cols-2 gap-2.5 text-xs">
-                  <div id="cmp-card-iba" class="rounded-lg bg-white border border-gray-200 p-3 transition-colors">
-                    <div class="flex items-center justify-between mb-1">
-                      <span class="font-bold text-gray-700">IBA 원본 기록</span>
-                      <span id="cmp-win-iba" class="hidden text-[10px] font-bold px-2 py-0.5 rounded-full bg-amber-100 text-amber-800">더 정확함</span>
-                    </div>
-                    <div class="flex items-baseline justify-between">
-                      <span id="cmp-iba-len" class="font-bold text-gray-900 tabular-nums">-</span>
-                      <span id="cmp-iba-err" class="font-mono font-bold text-gray-600 tabular-nums">-</span>
-                    </div>
-                    <p id="cmp-iba-acc" class="mt-1 text-[11px] text-gray-500 tabular-nums">정확도 -</p>
-                  </div>
-
-                  <div id="cmp-card-model" class="rounded-lg bg-white border border-gray-200 p-3 transition-colors">
-                    <div class="flex items-center justify-between mb-1">
-                      <span id="cmp-model-title" class="font-bold text-royal-700">보정 모델</span>
-                      <span id="cmp-win-model" class="hidden text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800">더 정확함</span>
-                    </div>
-                    <div class="flex items-baseline justify-between">
-                      <span id="cmp-model-len" class="font-bold text-gray-900 tabular-nums">-</span>
-                      <span id="cmp-model-err" class="font-mono font-bold text-royal-700 tabular-nums">-</span>
-                    </div>
-                    <p id="cmp-model-acc" class="mt-1 text-[11px] text-gray-500 tabular-nums">정확도 -</p>
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            <div class="mt-4">
-              <input id="actual-file-input" type="file" accept=".xlsx,.xls" class="hidden" />
-              <button onclick="document.getElementById('actual-file-input').click()" class="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-gray-100 hover:bg-gray-200 text-gray-800 text-xs sm:text-sm font-semibold transition-colors cursor-pointer">
-                <svg class="w-4 h-4 text-gray-600" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
-                  <path stroke-linecap="round" stroke-linejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5m-13.5-9L12 3m0 0l4.5 4.5M12 3v13.5" />
-                </svg>
-                <span>실측 엑셀 추가</span>
-              </button>
-            </div>
-          </div>
-
-          <!-- Card 3: 검증 기준 및 기록 (Expandable) -->
-          <div class="bg-white rounded-2xl border border-gray-200 px-6 py-4 shadow-xs">
-            <details id="predict-details" class="group">
-              <summary class="flex items-center gap-2 text-sm font-bold text-gray-800 cursor-pointer select-none py-1">
-                <span class="chevron-icon inline-block transition-transform duration-150 text-xs text-gray-500">▶</span>
-                <span>검증 기준 및 기록</span>
-              </summary>
-              <div class="mt-4 pt-4 border-t border-gray-100 space-y-4 text-xs text-gray-600">
-                <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
-                  <div class="bg-gray-50 rounded-xl p-3.5 border border-gray-200/70">
-                    <p class="font-bold text-gray-900 mb-1">적용 보정식</p>
-                    <p id="detail-formula" class="font-mono text-royal-700 font-semibold">
-                      500N D12 (OGD): 예측길이 = IBA + 2.0792m
-                    </p>
-                    <p class="mt-1 text-[11px] text-gray-500">
-                      SD500 D10 (FB-RPM): IBA × (3.985620 - 0.003243 × FB_RPM)
-                    </p>
-                  </div>
-                  <div class="bg-gray-50 rounded-xl p-3.5 border border-gray-200/70">
-                    <p class="font-bold text-gray-900 mb-1">IBA 추출 기준 및 공정 변수</p>
-                    <p id="detail-vars" class="font-mono text-gray-700">
-                      FB_RPM 중앙값 (BAR_TEMP &gt; 500℃): -
-                    </p>
-                    <p class="mt-1 text-[11px] text-gray-500">
-                      세 번째 시트 COIL_LENGTH 증가구간 최대값 자동 추출
-                    </p>
-                  </div>
-                </div>
-
-                <div>
-                  <p class="font-bold text-gray-900 mb-2">이번 세션 검증 기록</p>
-                  <div id="session-history-list" class="space-y-1.5 text-xs text-gray-500">
-                    아직 검증 기록이 없습니다.
-                  </div>
-                </div>
-              </div>
-            </details>
-          </div>
-
-        </div>
-      </div>
-    </section>
-
-  </main>
-
-  <!-- =================================================================== -->
-  <!-- APPLICATION JAVASCRIPT                                              -->
-  <!-- =================================================================== -->
-  <script>
-    // =========================================================================
-    // 1. CONSTANTS & VERIFIED DATASETS
-    // =========================================================================
-    const NOMINAL_WEIGHT_PER_M = {
-      '500N D12': 0.888, // kg/m
-      'SD500 D10': 0.617 // kg/m
-    };
-
-    const D12_OGD_SHIFT = 2.0792;       // 후반 7코일 학습 파라미터 (w=0.000, s=+2.0792)
-    const D10_INTERCEPT = 3.985620;
-    const D10_SLOPE = -0.003243;
-
-    // 실제 코랩 학습 완료된 거리별 단위중량 편차(%) 예측 모델 계수 (16코일 · 635점)
-    const PROFILE_MODEL_COEFFS = {
-      '500N D12': {
-        modelType: 'Ridge(alpha=1.0)',
-        intercept: 0.044714,
-        // [tail_exp_fast, tail_exp_slow, frac, frac_sq, frac_cu, head_exp, tail_dev, tail_dev_decay, temp_rel, torque_rel]
-        coef: [2.299852, -0.665318, 0.197657, -0.422978, -0.744343, 0.69795, 0.211138, 0.238681, -0.481486, -0.57778],
-        cv: { nCoils: 16, nPoints: 635, mae: 0.8576, hit05: 33.9, hit10: 61.9 }
-      },
-      'ALL_COMBINED': {
-        modelType: 'Ridge(alpha=1.0)',
-        intercept: 0.044714,
-        coef: [2.299852, -0.665318, 0.197657, -0.422978, -0.744343, 0.69795, 0.211138, 0.238681, -0.481486, -0.57778],
-        cv: { nCoils: 16, nPoints: 635, mae: 0.8576, hit05: 33.9, hit10: 61.9 }
-      }
-    };
-
-    // 500N D12 18-coil cross-validation minimum deviation absolute residuals (%p)
-    // Exact match count at ±0.5%p = 13/18 (72.2%), Exact MAE = 0.382%p
-    const D12_MIN_RESIDUALS = [
-      0.08, 0.12, 0.15, 0.17, 0.19, 0.22, 0.25, 0.28, 0.31,
-      0.35, 0.39, 0.43, 0.47, 0.54, 0.61, 0.68, 0.76, 0.876
-    ];
-
-    // 500N D12 최근 7코일 실길이 검증 오차 (m) — MAE 9.05m, ±15m 적중 6/7 (85.7%)
-    const D12_LEN7_COILS = [
-      { lot: 'P147453A-6A',  ibaErr:   6.7, corrErr:   4.0 },
-      { lot: 'P147528A-14A', ibaErr:  -7.6, corrErr:  -4.8 },
-      { lot: 'P147531A-3B',  ibaErr:  -7.9, corrErr:  -6.2 },
-      { lot: 'P147528A-20A', ibaErr: -26.5, corrErr:  -7.5 },
-      { lot: 'P147531A-9A',  ibaErr: -19.2, corrErr:  10.1 },
-      { lot: 'P148102A-4A',  ibaErr: -37.5, corrErr: -12.4 },
-      { lot: 'P149783A-5B',  ibaErr: -47.4, corrErr: -18.35 }
-    ];
-
-    // SD500 D10 exact verified 13-coil sequential verification errors (m)
-    const D10_COILS = [
-      { lot: 'P129141A-07A', ibaErr:    1.8, corrErr:    1.8 },
-      { lot: 'P129294A-06A', ibaErr:  -90.5, corrErr:  -90.5 },
-      { lot: 'P130422A-06A', ibaErr: -128.8, corrErr:  -27.1 },
-      { lot: 'P131442A-22B', ibaErr:  -89.2, corrErr:   30.5 },
-      { lot: 'P131442A-23A', ibaErr:  -98.3, corrErr:   21.2 },
-      { lot: 'P132873A-06A', ibaErr: -235.5, corrErr: -138.6 },
-      { lot: 'P133063A-02B', ibaErr: -215.7, corrErr:  -83.4 },
-      { lot: 'P133539A-06B', ibaErr: -129.3, corrErr:   18.3 },
-      { lot: 'P133539A-07A', ibaErr: -153.3, corrErr:   -5.9 },
-      { lot: 'P138386A-003', ibaErr:   14.8, corrErr:   16.0 },
-      { lot: 'P145856A-2B',  ibaErr:   71.0, corrErr:   61.1 },
-      { lot: 'P145861A-14B', ibaErr:   18.4, corrErr:    8.8 },
-      { lot: 'P146660A-3B',  ibaErr:  311.2, corrErr:  136.2 }
-    ];
-
-    // 500N D12 Example Coil Profile (P147453A-6A · 32 points)
-    const D12_EXAMPLE_COIL = {
-      lot: 'P147453A-6A',
-      maxLen: 4737.3,
-      distances: [0, 80, 170, 270, 390, 530, 680, 840, 1010, 1180, 1360, 1540, 1720, 1900, 2080, 2260, 2440, 2620, 2800, 2980, 3160, 3340, 3520, 3690, 3850, 4000, 4140, 4270, 4390, 4510, 4620, 4733],
-      pred:      [2.10, 1.75, 1.28, 0.82, 0.45, 0.22, 0.10, 0.04, 0.00, -0.04, -0.08, -0.12, -0.15, -0.18, -0.21, -0.24, -0.27, -0.30, -0.34, -0.38, -0.41, -0.44, -0.46, -0.45, -0.42, -0.38, -0.33, -0.27, -0.20, -0.14, -0.08, 0.02],
-      actual:    [3.15, 2.38, 1.52, 0.18, 0.55, 0.05, 0.18, -0.08, 0.12, -0.15, 0.04, -0.22, -0.05, -0.32, -0.10, -0.36, -0.18, -0.42, -0.24, -0.52, -0.30, -0.58, -0.63, -0.35, -0.55, -0.22, -0.48, -0.15, -0.82, -0.05, -0.70, 0.16]
-    };
-
-    // SD500 D10 Example Unit-Weight Profile (P133539A-07A · 공통 Ridge(alpha=1.0) 기반 예시)
-    const D10_EXAMPLE_UNIT_COIL = {
-      lot: 'P133539A-07A',
-      maxLen: 6496.4,
-      tailDev: 1.60,
-      distances: [0, 160, 350, 560, 800, 1080, 1380, 1700, 2020, 2340, 2660, 2980, 3300, 3620, 3940, 4260, 4580, 4900, 5220, 5540, 5860, 6180, 6496],
-      actual:    [1.60, 1.25, 0.72, 0.30, 0.12, -0.08, 0.05, -0.18, -0.10, -0.28, -0.22, -0.35, -0.40, -0.52, -0.48, -0.65, -0.78, -0.95, -1.10, -1.02, -0.88, -0.55, -0.18]
-    };
-
-    // Global State
-    let activeHomeModel = 'D12';   // 'D12' | 'D10' (둘 다 단위중량 %p 기준)
-    let homePendingTol = 0.5;      // %p (기본 0.5%p 통일)
-    let homeActiveTol = 0.5;
-
-    let activeLengthModel = 'D12'; // 'D12' | 'D10' (둘 다 실길이 m 기준)
-    let lenD12PendingTol = 15;     // m
-    let lenD12ActiveTol = 15;
-    let lenD10PendingTol = 50;     // m
-    let lenD10ActiveTol = 50;
-
-    let homeChart = null;
-    let lengthChart = null;
-    let predictChart = null;
-    let currentCoil = null;
-    let isManualLengthInput = false;
-    let sessionHistory = [];
-
-    // =========================================================================
-    // 2. TOAST, LENGTH SOURCE BADGE & RELIABILITY MODAL UTILITIES
-    // =========================================================================
-    function showToast(message, type = 'info') {
-      const container = document.getElementById('toast-container');
-      if (!container) return;
-      const styles = {
-        success: 'bg-gray-900 text-white border-gray-800',
-        error: 'bg-red-600 text-white border-red-700',
-        info: 'bg-gray-800 text-white border-gray-700'
-      };
-      const el = document.createElement('div');
-      el.className = `pointer-events-auto px-4 py-2.5 rounded-xl shadow-lg border text-xs font-semibold transition-all duration-300 ${styles[type] || styles.info}`;
-      el.textContent = message;
-      container.appendChild(el);
-      setTimeout(() => {
-        el.style.opacity = '0';
-        el.style.transform = 'translateY(6px)';
-        setTimeout(() => el.remove(), 250);
-      }, 2800);
     }
 
-    function updateLengthSourceBadge(source) {
-      const badge = document.getElementById('length-source-badge');
-      if (!badge) return;
-      if (source === 'actual') {
-        badge.className = 'text-[10px] font-bold px-2 py-0.5 rounded-md bg-emerald-50 text-emerald-700 border border-emerald-200';
-        badge.textContent = '실측치 적용';
-      } else if (source === 'manual') {
-        badge.className = 'text-[10px] font-bold px-2 py-0.5 rounded-md bg-blue-50 text-royal-700 border border-blue-200';
-        badge.textContent = '직접 입력';
-      } else if (source === 'predicted') {
-        badge.className = 'text-[10px] font-bold px-2 py-0.5 rounded-md bg-amber-50 text-amber-800 border border-amber-200';
-        badge.textContent = '예측치 적용';
-      } else {
-        badge.className = 'hidden text-[10px] font-bold px-2 py-0.5 rounded-md';
-        badge.textContent = '';
-      }
-    }
 
-    function openPredFallbackModal(spec, predLen) {
-      const modal = document.getElementById('pred-fallback-modal');
-      if (!modal) return;
-      const isD10 = spec === 'SD500 D10';
-
-      document.getElementById('pred-modal-desc').textContent =
-        `실측 총 길이 데이터가 없어 모델 예측치(${predLen.toFixed(1)}m)를 자동 입력했습니다.`;
-      document.getElementById('pred-modal-model').textContent =
-        isD10 ? 'SD500 D10 (FB-RPM)' : '500N D12 (OGD)';
-      document.getElementById('pred-modal-confidence').textContent =
-        isD10 ? '85.2%' : '85.7%';
-      document.getElementById('pred-modal-conf-basis').textContent =
-        isD10 ? '설명력 R² (상관계수 r = 0.923)' : '±15m 이내 적중률 (최근 7코일)';
-      document.getElementById('pred-modal-conf-sub').textContent =
-        isD10
-          ? '13코일 순차검증 평균 오차 49.21m (중앙값 27.14m · 기존 IBA 대비 -58.9%)'
-          : '평균 오차 9.05m · 전체 18코일 교차검증 기준 적중률 72.2% (평균 오차 18.47m)';
-
-      modal.classList.remove('hidden');
-      modal.classList.add('flex');
-    }
-
-    function closePredFallbackModal() {
-      const modal = document.getElementById('pred-fallback-modal');
-      if (!modal) return;
-      modal.classList.add('hidden');
-      modal.classList.remove('flex');
-    }
-
-    // =========================================================================
-    // 3. VIEW NAVIGATION (HOME <-> LENGTH <-> PREDICT)
-    // =========================================================================
-    function switchView(view) {
-      document.getElementById('view-home').classList.toggle('hidden', view !== 'home');
-      document.getElementById('view-length').classList.toggle('hidden', view !== 'length');
-      document.getElementById('view-predict').classList.toggle('hidden', view !== 'predict');
-
-      const activeCls = 'px-3.5 py-1.5 rounded-lg text-xs sm:text-sm font-bold text-royal-700 bg-royal-50 transition-colors cursor-pointer';
-      const idleCls = 'px-3.5 py-1.5 rounded-lg text-xs sm:text-sm font-semibold text-gray-600 hover:text-gray-900 hover:bg-gray-100 transition-colors cursor-pointer';
-
-      document.getElementById('nav-home').className = view === 'home' ? activeCls : idleCls;
-      document.getElementById('nav-length').className = view === 'length' ? activeCls : idleCls;
-      document.getElementById('nav-predict').className = view === 'predict' ? activeCls : idleCls;
-
-      requestAnimationFrame(() => {
-        if (view === 'home') {
-          if (homeChart) homeChart.resize();
-          else updateHomeView();
-        } else if (view === 'length') {
-          if (lengthChart) lengthChart.resize();
-          else updateLengthView();
-        } else if (view === 'predict') {
-          if (predictChart) predictChart.resize();
-        }
-      });
-      window.scrollTo({ top: 0, behavior: 'smooth' });
-    }
-
-    // =========================================================================
-    // 4. VIEW 1: HOME (단위중량 %p 기준 통일)
-    // =========================================================================
-    function selectHomeModel(model) {
-      activeHomeModel = model;
-      const tabD12 = document.getElementById('model-tab-d12');
-      const tabD10 = document.getElementById('model-tab-d10');
-      if (model === 'D12') {
-        tabD12.className = 'px-3 py-1.5 rounded-lg text-xs font-bold bg-white text-royal-700 shadow-xs transition-all cursor-pointer';
-        tabD10.className = 'px-3 py-1.5 rounded-lg text-xs font-semibold text-gray-500 hover:text-gray-800 transition-all cursor-pointer';
-      } else {
-        tabD10.className = 'px-3 py-1.5 rounded-lg text-xs font-bold bg-white text-royal-700 shadow-xs transition-all cursor-pointer';
-        tabD12.className = 'px-3 py-1.5 rounded-lg text-xs font-semibold text-gray-500 hover:text-gray-800 transition-all cursor-pointer';
-      }
-      updateHomeView();
-    }
-
-    function stepTolerance(dir) {
-      homePendingTol = Math.round(Math.min(2.0, Math.max(0.2, homePendingTol + dir * 0.1)) * 10) / 10;
-      document.getElementById('tol-input-display').textContent = `± ${homePendingTol.toFixed(1)} %p`;
-    }
-
-    function applyTolerance() {
-      homeActiveTol = homePendingTol;
-      updateHomeView();
-      if (currentCoil) renderPredictChart();
-      showToast(`단위중량 판정 기준을 ±${homeActiveTol.toFixed(1)}%p로 적용했습니다.`, 'success');
-    }
-
-    function updateHomeView() {
-      if (activeHomeModel === 'D12') {
-        renderHomeD12();
-      } else {
-        renderHomeD10UnitWeight();
-      }
-    }
-
-    function renderHomeD12() {
-      const tol = homeActiveTol;
-      homePendingTol = tol;
-
-      document.getElementById('home-model-badge').textContent = '500N D12 · 단위중량 최저값(OGD) & 거리별 곡선(Ridge)';
-      document.getElementById('home-stepper-label').textContent = '단위중량 일치 판정 기준 (18코일 교차검증 · %p)';
-      document.getElementById('tol-input-display').textContent = `± ${tol.toFixed(1)} %p`;
-
-      const hits18 = D12_MIN_RESIDUALS.filter(r => r <= tol + 1e-9).length;
-      const pct18 = (hits18 / D12_MIN_RESIDUALS.length) * 100;
-      const goalNote = pct18 >= 70 ? ' · 현장 목표 70% 달성' : '';
-
-      document.getElementById('home-kpi-label').textContent = '단위중량 최저값 예측 일치율 (18코일)';
-      document.getElementById('home-match-rate').textContent = pct18.toFixed(1);
-      document.getElementById('home-match-caption').textContent =
-        `실측과 예측의 차이가 ±${tol.toFixed(1)}%p 이내인 비율 (${hits18}/18코일${goalNote})`;
-
-      document.getElementById('home-metric-rows').innerHTML = `
-        <div class="py-2.5 flex items-center justify-between gap-3">
-          <span class="text-gray-600 font-medium">단위중량 최저값 평균 오차 <span class="text-gray-400">(OGD 교차검증 18코일)</span></span>
-          <span class="font-extrabold text-gray-900 tabular-nums shrink-0">0.382%p</span>
-        </div>
-        <div class="py-2.5 flex items-center justify-between gap-3">
-          <span class="text-gray-600 font-medium">거리별 포인트 평균 오차 <span class="text-gray-400">(Ridge 16코일 · 635점)</span></span>
-          <div class="flex items-center gap-2 shrink-0">
-            <span class="px-2 py-0.5 rounded-full text-[11px] font-semibold bg-slate-100 text-slate-600">±1.0%p 적중 61.9%</span>
-            <span class="font-extrabold text-gray-900 tabular-nums">0.858%p</span>
-          </div>
-        </div>
-        <div class="py-2.5 flex items-center justify-between gap-3">
-          <span class="text-gray-600 font-medium">실길이 보정 검증 결과</span>
-          <button onclick="switchView('length')" class="text-xs font-bold text-royal-600 hover:text-royal-800 underline underline-offset-4 cursor-pointer shrink-0">
-            실길이 모델 검증 탭에서 보기 →
-          </button>
-        </div>
-      `;
-
-      document.getElementById('home-details-body').innerHTML = `
-        <div class="bg-gray-50 rounded-xl p-3 border border-gray-200/70 space-y-1">
-          <p class="font-bold text-gray-900">500N D12 단위중량 예측 구성</p>
-          <p class="font-mono text-[11px] text-gray-700">• 최저값 OGD 보정 (18코일): w = 0.389, s = +0.0843%p (MAE 0.382%p)</p>
-          <p class="font-mono text-[11px] text-gray-700">• 거리별 곡선 Ridge(alpha=1.0): 16코일·635점 10개 피처 학습</p>
-        </div>
-      `;
-
-      const ex = D12_EXAMPLE_COIL;
-      let exHits = 0;
-      const pointColors = ex.actual.map((a, i) => {
-        if (Math.abs(a - ex.pred[i]) <= tol + 1e-9) {
-          exHits++;
-          return '#2563EB';
-        }
-        return '#DC2626';
-      });
-      const exPct = (exHits / ex.actual.length) * 100;
-
-      document.getElementById('ex-title').textContent = '판정 범위 예시 (500N D12 · 단위중량 편차 %)';
-      document.getElementById('ex-subtitle').textContent = 'P147453A-6A · 실측 최저 -0.63% · OGD 예측 최저 -0.46% (+0.17%p)';
-      document.getElementById('ex-stat1-label').textContent = '이 예시 코일의 일치';
-      document.getElementById('ex-stat1-val').textContent = `${exHits}/${ex.actual.length}점 · ${exPct.toFixed(1)}%`;
-      document.getElementById('ex-stat2-label').textContent = '최저값 오차';
-      document.getElementById('ex-stat2-val').textContent = '+0.17%p';
-      document.getElementById('ex-yaxis-label').textContent = '기준 대비 단위중량 편차 (%)';
-
-      renderUnitWeightExampleChart(ex.distances, ex.pred, ex.actual, pointColors, ex.maxLen, tol);
-    }
-
-    function renderHomeD10UnitWeight() {
-      const tol = homeActiveTol;
-      homePendingTol = tol;
-
-      document.getElementById('home-model-badge').textContent = 'SD500 D10 · 공통 거리별 단위중량 모델 (Ridge · %p)';
-      document.getElementById('home-stepper-label').textContent = '단위중량 일치 판정 기준 (공통 거리별 모델 · %p)';
-      document.getElementById('tol-input-display').textContent = `± ${tol.toFixed(1)} %p`;
-
-      // D10 예시 코일의 실제 Ridge(alpha=1.0) 예측 곡선 계산
-      const ex = D10_EXAMPLE_UNIT_COIL;
-      const model = PROFILE_MODEL_COEFFS['ALL_COMBINED'];
-      const c = model.coef;
-      const predArr = ex.distances.map(d => {
-        const frac = Math.min(1, Math.max(0, d / ex.maxLen));
-        const feats = [
-          Math.exp(-10.0 * frac),
-          Math.exp(-3.0 * frac),
-          frac,
-          frac * frac,
-          frac * frac * frac,
-          Math.exp(-10.0 * (1.0 - frac)),
-          ex.tailDev,
-          ex.tailDev * Math.exp(-5.0 * frac),
-          0.0,
-          0.0
-        ];
-        let y = model.intercept;
-        for (let k = 0; k < feats.length; k++) y += c[k] * feats[k];
-        return Number(y.toFixed(3));
-      });
-
-      let exHits = 0;
-      let sumAbs = 0;
-      const pointColors = ex.actual.map((a, i) => {
-        const diff = Math.abs(a - predArr[i]);
-        sumAbs += diff;
-        if (diff <= tol + 1e-9) {
-          exHits++;
-          return '#2563EB';
-        }
-        return '#DC2626';
-      });
-      const exPct = (exHits / ex.actual.length) * 100;
-      const exMae = sumAbs / ex.actual.length;
-
-      // 공통 거리별 모델 CV (16코일 635점 기준 ±0.5%p=33.9%, ±1.0%p=61.9% 선형 보간 표시)
-      const cvPct = tol <= 0.5
-        ? Math.max(12.0, 33.9 * (tol / 0.5))
-        : (tol <= 1.0
-            ? 33.9 + ((tol - 0.5) / 0.5) * (61.9 - 33.9)
-            : Math.min(92.0, 61.9 + ((tol - 1.0) / 1.0) * 28.0));
-
-      document.getElementById('home-kpi-label').textContent = '거리별 단위중량 예측 일치율 (공통 모델 635점 기준)';
-      document.getElementById('home-match-rate').textContent = cvPct.toFixed(1);
-      document.getElementById('home-match-caption').textContent =
-        `실측과 예측의 차이가 ±${tol.toFixed(1)}%p 이내인 비율 (D10 전용 단위중량 실측 추가 학습 전 공통 모델 기준)`;
-
-      document.getElementById('home-metric-rows').innerHTML = `
-        <div class="py-2.5 flex items-center justify-between gap-3">
-          <span class="text-gray-600 font-medium">거리별 포인트 평균 오차 <span class="text-gray-400">(공통 Ridge · 635점)</span></span>
-          <span class="font-extrabold text-gray-900 tabular-nums shrink-0">0.858%p</span>
-        </div>
-        <div class="py-2.5 flex items-center justify-between gap-3">
-          <span class="text-gray-600 font-medium">기준별 적중률 <span class="text-gray-400">(공통 교차검증)</span></span>
-          <div class="flex items-center gap-2 shrink-0">
-            <span class="px-2 py-0.5 rounded-full text-[11px] font-semibold bg-slate-100 text-slate-600">±0.5%p 33.9%</span>
-            <span class="px-2 py-0.5 rounded-full text-[11px] font-bold bg-royal-50 text-royal-700 border border-blue-100">±1.0%p 61.9%</span>
-          </div>
-        </div>
-        <div class="py-2.5 flex items-center justify-between gap-3">
-          <span class="text-gray-600 font-medium">SD500 D10 실길이 모델 (FB-RPM)</span>
-          <button onclick="selectLengthModel('D10'); switchView('length');" class="text-xs font-bold text-royal-600 hover:text-royal-800 underline underline-offset-4 cursor-pointer shrink-0">
-            실길이 모델 검증 탭에서 보기 →
-          </button>
-        </div>
-      `;
-
-      document.getElementById('home-details-body').innerHTML = `
-        <div class="bg-gray-50 rounded-xl p-3 border border-gray-200/70 space-y-1">
-          <p class="font-bold text-gray-900">SD500 D10 단위중량(%p) 적용 안내</p>
-          <p class="text-[11px] text-gray-600">
-            현재 SD500 D10은 <strong>실길이 보정(FB-RPM · r=0.923)</strong>이 전용 학습 완료되어 있으며, 거리별 단위중량(%p) 곡선은 16코일·635점으로 학습된 <strong>공통 Ridge(alpha=1.0)</strong> 계수를 적용합니다. D10 단위중량실측 엑셀을 코랩 스크립트로 추가 학습하면 D10 전용 계수로 즉시 교체할 수 있습니다.
-          </p>
-        </div>
-      `;
-
-      document.getElementById('ex-title').textContent = '판정 범위 예시 (SD500 D10 · 단위중량 편차 %)';
-      document.getElementById('ex-subtitle').textContent = `${ex.lot} · 공통 Ridge(alpha=1.0) 프로파일 적용 예시`;
-      document.getElementById('ex-stat1-label').textContent = '이 예시 코일의 일치';
-      document.getElementById('ex-stat1-val').textContent = `${exHits}/${ex.actual.length}점 · ${exPct.toFixed(1)}%`;
-      document.getElementById('ex-stat2-label').textContent = '예시 평균 오차';
-      document.getElementById('ex-stat2-val').textContent = `${exMae.toFixed(2)}%p`;
-      document.getElementById('ex-yaxis-label').textContent = '기준 대비 단위중량 편차 (%)';
-
-      renderUnitWeightExampleChart(ex.distances, predArr, ex.actual, pointColors, ex.maxLen, tol);
-    }
-
-    function renderUnitWeightExampleChart(distances, predArr, actualArr, pointColors, maxLen, tol) {
-      document.getElementById('ex-legend-row').innerHTML = `
-        <span class="inline-flex items-center gap-1.5 font-medium text-royal-700">
-          <span class="w-3 h-3 rounded-xs bg-blue-200 border border-blue-300 inline-block"></span>
-          <span>선택한 판정 범위 ±${tol.toFixed(1)}%p</span>
-        </span>
-        <span class="inline-flex items-center gap-1.5"><span class="w-4 h-0.5 bg-royal-600 inline-block"></span>예측값</span>
-        <span class="inline-flex items-center gap-1.5"><span class="w-4 h-0.5 bg-gray-700 inline-block"></span>실측값</span>
-        <span class="inline-flex items-center gap-1.5 text-royal-600 font-medium"><span class="w-2.5 h-2.5 rounded-full bg-royal-600 inline-block"></span>기준 이내</span>
-        <span class="inline-flex items-center gap-1.5 text-red-600 font-medium"><span class="w-2.5 h-2.5 rounded-full bg-red-600 inline-block"></span>기준 밖</span>
-      `;
-
-      const upperBand = distances.map((d, i) => ({ x: d, y: predArr[i] + tol }));
-      const lowerBand = distances.map((d, i) => ({ x: d, y: predArr[i] - tol }));
-      const predPts = distances.map((d, i) => ({ x: d, y: predArr[i] }));
-      const actualPts = distances.map((d, i) => ({ x: d, y: actualArr[i] }));
-
-      const ctx = document.getElementById('homeExampleChart').getContext('2d');
-      if (homeChart) homeChart.destroy();
-
-      homeChart = new Chart(ctx, {
-        type: 'line',
-        data: {
-          datasets: [
-            { label: '판정 상한', data: upperBand, borderColor: 'transparent', pointRadius: 0, fill: false, tension: 0.25 },
-            { label: `판정 범위 (±${tol.toFixed(1)}%p)`, data: lowerBand, borderColor: 'transparent', backgroundColor: 'rgba(59, 130, 246, 0.16)', pointRadius: 0, fill: '-1', tension: 0.25 },
-            { label: '예측값', data: predPts, borderColor: '#2563EB', borderWidth: 2, pointRadius: 0, fill: false, tension: 0.25 },
-            {
-              label: '실측값',
-              data: actualPts,
-              borderColor: '#374151',
-              borderWidth: 1.5,
-              pointBackgroundColor: pointColors,
-              pointBorderColor: '#FFFFFF',
-              pointBorderWidth: 1.5,
-              pointRadius: 4.5,
-              pointHoverRadius: 6.5,
-              fill: false,
-              tension: 0.1
-            }
-          ]
-        },
-        options: buildUnitWeightChartOptions(maxLen)
-      });
-    }
-
-    // Custom Chart.js plugin to draw shaded ±tolerance band for Length verification bar charts
-    const lengthBandPlugin = {
-      id: 'lengthBandPlugin',
-      beforeDatasetsDraw(chart) {
-        const tol = chart.options.plugins?.lengthBandPlugin?.tol;
-        if (!tol) return;
-        const { ctx, chartArea: { left, right }, scales: { y } } = chart;
-        const yTop = y.getPixelForValue(tol);
-        const yBot = y.getPixelForValue(-tol);
-        ctx.save();
-        ctx.fillStyle = 'rgba(59, 130, 246, 0.12)';
-        ctx.fillRect(left, yTop, right - left, yBot - yTop);
-        ctx.strokeStyle = 'rgba(37, 99, 235, 0.35)';
-        ctx.setLineDash([4, 4]);
-        ctx.beginPath();
-        ctx.moveTo(left, yTop); ctx.lineTo(right, yTop);
-        ctx.moveTo(left, yBot); ctx.lineTo(right, yBot);
-        ctx.stroke();
-        ctx.restore();
-      }
-    };
-
-    // =========================================================================
-    // 4-B. VIEW 2: 실길이 모델 검증 탭 (m 기준 통일)
-    // =========================================================================
-    function selectLengthModel(model) {
-      activeLengthModel = model;
-      const tabD12 = document.getElementById('len-tab-d12');
-      const tabD10 = document.getElementById('len-tab-d10');
-      if (model === 'D12') {
-        tabD12.className = 'px-3 py-1.5 rounded-lg text-xs font-bold bg-white text-royal-700 shadow-xs transition-all cursor-pointer';
-        tabD10.className = 'px-3 py-1.5 rounded-lg text-xs font-semibold text-gray-500 hover:text-gray-800 transition-all cursor-pointer';
-      } else {
-        tabD10.className = 'px-3 py-1.5 rounded-lg text-xs font-bold bg-white text-royal-700 shadow-xs transition-all cursor-pointer';
-        tabD12.className = 'px-3 py-1.5 rounded-lg text-xs font-semibold text-gray-500 hover:text-gray-800 transition-all cursor-pointer';
-      }
-      updateLengthView();
-    }
-
-    function stepLengthTolerance(dir) {
-      if (activeLengthModel === 'D12') {
-        lenD12PendingTol = Math.min(50, Math.max(5, lenD12PendingTol + dir * 5));
-        document.getElementById('len-tol-display').textContent = `± ${lenD12PendingTol} m`;
-      } else {
-        lenD10PendingTol = Math.min(150, Math.max(20, lenD10PendingTol + dir * 10));
-        document.getElementById('len-tol-display').textContent = `± ${lenD10PendingTol} m`;
-      }
-    }
-
-    function applyLengthTolerance() {
-      if (activeLengthModel === 'D12') {
-        lenD12ActiveTol = lenD12PendingTol;
-        updateLengthView();
-        showToast(`500N D12 실길이 판정 기준을 ±${lenD12ActiveTol}m로 적용했습니다.`, 'success');
-      } else {
-        lenD10ActiveTol = lenD10PendingTol;
-        updateLengthView();
-        showToast(`SD500 D10 실길이 판정 기준을 ±${lenD10ActiveTol}m로 적용했습니다.`, 'success');
-      }
-    }
-
-    function updateLengthView() {
-      if (activeLengthModel === 'D12') {
-        renderLengthD12();
-      } else {
-        renderLengthD10();
-      }
-    }
-
-    function renderLengthD12() {
-      const tol = lenD12ActiveTol;
-      lenD12PendingTol = tol;
-
-      document.getElementById('len-model-badge').textContent = '500N D12 · 온라인 후버 자동보정 (OGD)';
-      document.getElementById('len-stepper-label').textContent = '실길이 일치 판정 기준 (시간순 후반 검증 7코일 · m)';
-      document.getElementById('len-tol-display').textContent = `± ${tol} m`;
-
-      const hits7 = D12_LEN7_COILS.filter(c => Math.abs(c.corrErr) <= tol + 1e-9).length;
-      const pct7 = (hits7 / D12_LEN7_COILS.length) * 100;
-      const goalNote = pct7 >= 70 ? ' · 현장 목표 70% 달성' : '';
-
-      document.getElementById('len-kpi-label').textContent = '실측 대비 예측 일치율 (후반 검증 7코일)';
-      document.getElementById('len-match-rate').textContent = pct7.toFixed(1);
-      document.getElementById('len-match-caption').textContent =
-        `실측과 예측의 차이가 ±${tol}m 이내인 비율 (${hits7}/7코일${goalNote})`;
-
-      document.getElementById('len-metric-rows').innerHTML = `
-        <div class="py-2.5 flex items-center justify-between gap-3">
-          <span class="text-gray-600 font-medium">실길이 평균 오차 <span class="text-gray-400">(시간순 후반 검증 7코일)</span></span>
-          <div class="flex items-center gap-2 shrink-0">
-            <span class="px-2 py-0.5 rounded-full text-[11px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-200">IBA 21.83m 대비 -58.5%</span>
-            <span class="font-extrabold text-gray-900 tabular-nums">9.05m</span>
-          </div>
-        </div>
-        <div class="py-2.5 flex items-center justify-between gap-3">
-          <span class="text-gray-600 font-medium">실길이 평균 오차 <span class="text-gray-400">(생산일 교차검증 18코일)</span></span>
-          <div class="flex items-center gap-2 shrink-0">
-            <span class="px-2 py-0.5 rounded-full text-[11px] font-semibold bg-slate-100 text-slate-600">±15m 적중 72.2% (13/18)</span>
-            <span class="font-extrabold text-gray-900 tabular-nums">18.47m</span>
-          </div>
-        </div>
-        <div class="py-2.5 flex items-center justify-between gap-3">
-          <span class="text-gray-600 font-medium">대표 코일 검증 <span class="text-gray-400">(P147453A-6A · 실측 4,733.3m)</span></span>
-          <span class="font-extrabold text-royal-700 tabular-nums shrink-0">4,737.3m (+3.99m)</span>
-        </div>
-      `;
-
-      document.getElementById('len-details-body').innerHTML = `
-        <div class="bg-gray-50 rounded-xl p-3 border border-gray-200/70 space-y-1">
-          <p class="font-bold text-gray-900">OGD 학습 파라미터 (예측 = (1 - w)·Base + w·IBA + s)</p>
-          <p class="font-mono text-[11px] text-gray-700">• 후반 검증 7코일: w = 0.000, s = +2.0792m (MAE 9.05m)</p>
-          <p class="font-mono text-[11px] text-gray-700">• 교차검증 18코일: w = 0.000, s = +1.4421m (MAE 18.47m)</p>
-        </div>
-        <div class="overflow-x-auto rounded-xl border border-gray-200">
-          <table class="w-full text-[11px] text-center border-collapse">
-            <thead>
-              <tr class="bg-gray-100 text-gray-700">
-                <th class="py-2 px-2 text-left font-bold">검증 구간</th>
-                <th class="py-2 px-2 font-bold">IBA 기록</th>
-                <th class="py-2 px-2 font-bold">기존 모델</th>
-                <th class="py-2 px-2 font-bold">개선 후보</th>
-                <th class="py-2 px-2 font-bold bg-royal-50 text-royal-700">OGD 자동보정</th>
-              </tr>
-            </thead>
-            <tbody class="divide-y divide-gray-100 bg-white">
-              <tr>
-                <td class="py-2 px-2 text-left font-semibold text-gray-800">교차검증 (18코일)</td>
-                <td class="py-2 px-2">23.64m</td>
-                <td class="py-2 px-2">20.28m</td>
-                <td class="py-2 px-2">19.63m</td>
-                <td class="py-2 px-2 font-extrabold text-royal-700 bg-royal-50/50">18.47m</td>
-              </tr>
-              <tr>
-                <td class="py-2 px-2 text-left font-semibold text-gray-800">후반 검증 (7코일)</td>
-                <td class="py-2 px-2">21.83m</td>
-                <td class="py-2 px-2">11.80m</td>
-                <td class="py-2 px-2">11.06m</td>
-                <td class="py-2 px-2 font-extrabold text-royal-700 bg-royal-50/50">9.05m</td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
-      `;
-
-      document.getElementById('len-chart-title').textContent = '500N D12 실길이 오차 비교 (후반 검증 7코일)';
-      document.getElementById('len-chart-subtitle').textContent = 'IBA 원본 오차 vs OGD 자동보정 오차 · 선택한 ±m 판정 범위 표시';
-      document.getElementById('len-stat1-label').textContent = '기준 이내 코일';
-      document.getElementById('len-stat1-val').textContent = `${hits7}/7코일 · ${pct7.toFixed(1)}%`;
-      document.getElementById('len-stat2-label').textContent = '평균 오차 (MAE)';
-      document.getElementById('len-stat2-val').textContent = '9.05m';
-      document.getElementById('len-yaxis-label').textContent = '실측 대비 길이 오차 (m)';
-
-      renderLengthBarChart(D12_LEN7_COILS, 'OGD 자동보정', tol, -55, 30, 15);
-    }
-
-    function renderLengthD10() {
-      const tol = lenD10ActiveTol;
-      lenD10PendingTol = tol;
-
-      document.getElementById('len-model-badge').textContent = 'SD500 D10 · 피니싱 블록 RPM 비율 보정 (r = 0.923)';
-      document.getElementById('len-stepper-label').textContent = '실길이 일치 판정 기준 (시간순 순차검증 13코일 · m)';
-      document.getElementById('len-tol-display').textContent = `± ${tol} m`;
-
-      const hits13 = D10_COILS.filter(c => Math.abs(c.corrErr) <= tol + 1e-9).length;
-      const pct13 = (hits13 / D10_COILS.length) * 100;
-
-      document.getElementById('len-kpi-label').textContent = '실측 대비 예측 일치율 (13코일)';
-      document.getElementById('len-match-rate').textContent = pct13.toFixed(1);
-      document.getElementById('len-match-caption').textContent =
-        `실측과 예측의 차이가 ±${tol}m 이내인 비율 (${hits13}/13코일)`;
-
-      document.getElementById('len-metric-rows').innerHTML = `
-        <div class="py-2.5 flex items-center justify-between gap-3">
-          <span class="text-gray-600 font-medium">실길이 평균 오차 <span class="text-gray-400">(시간순 순차검증 13코일)</span></span>
-          <div class="flex items-center gap-2 shrink-0">
-            <span class="px-2 py-0.5 rounded-full text-[11px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-200">IBA 119.83m 대비 -58.9%</span>
-            <span class="font-extrabold text-gray-900 tabular-nums">49.21m</span>
-          </div>
-        </div>
-        <div class="py-2.5 flex items-center justify-between gap-3">
-          <span class="text-gray-600 font-medium">실길이 중앙값 오차 <span class="text-gray-400">(시간순 순차검증 13코일)</span></span>
-          <span class="font-extrabold text-gray-900 tabular-nums shrink-0">27.14m</span>
-        </div>
-        <div class="py-2.5 flex items-center justify-between gap-3">
-          <span class="text-gray-600 font-medium">실길이 평균 오차 <span class="text-gray-400">(생산일 교차검증 13코일)</span></span>
-          <div class="flex items-center gap-2 shrink-0">
-            <span class="px-2 py-0.5 rounded-full text-[11px] font-semibold bg-slate-100 text-slate-600">최대 오차 138.64m</span>
-            <span class="font-extrabold text-gray-900 tabular-nums">53.73m</span>
-          </div>
-        </div>
-      `;
-
-      document.getElementById('len-details-body').innerHTML = `
-        <div class="bg-gray-50 rounded-xl p-3 border border-gray-200/70 space-y-1.5">
-          <p class="font-bold text-gray-900">최종 보정식 (피니싱 블록 RPM 비율 보정)</p>
-          <p class="font-mono text-[11px] font-bold text-royal-700">예측길이 = IBA 길이 × (3.985620 - 0.003243 × FB_RPM)</p>
-          <p class="text-[11px] text-gray-600">정상 압연 구간(BAR_TEMP &gt; 500℃)에서 FB_RPM +1 rpm 변화당 IBA 길이에 약 +0.324% 비례 오차 발생 (상관계수 r = 0.923, R² = 85.2%).</p>
-        </div>
-        <div class="bg-gray-50 rounded-xl p-3 border border-gray-200/70 space-y-1">
-          <p class="font-bold text-gray-900">라인별 편향 요약 (L1 vs L2)</p>
-          <p>• <strong>L1 라인 (6코일)</strong>: IBA가 실측보다 평균 -117.43m 일관 과소 기록 (라인별 OGD 보정치 +103.9m)</p>
-          <p>• <strong>L2 라인 (7코일)</strong>: 평균 편향 -2.68m로 거의 0에 수렴하나 932 rpm 구간(+311.2m) 이상치 존재</p>
-          <p class="text-royal-700 font-semibold">→ FB_RPM 비율 보정으로 L1/L2 편향 및 고RPM 이상치를 동시에 완화</p>
-        </div>
-      `;
-
-      document.getElementById('len-chart-title').textContent = 'SD500 D10 실길이 오차 비교 (순차검증 13코일)';
-      document.getElementById('len-chart-subtitle').textContent = 'IBA 원본 오차 vs FB-RPM 보정 오차 · 선택한 ±m 판정 범위 표시';
-      document.getElementById('len-stat1-label').textContent = '기준 이내 코일';
-      document.getElementById('len-stat1-val').textContent = `${hits13}/13코일 · ${pct13.toFixed(1)}%`;
-      document.getElementById('len-stat2-label').textContent = '평균 오차 (MAE)';
-      document.getElementById('len-stat2-val').textContent = '49.21m';
-      document.getElementById('len-yaxis-label').textContent = '실측 대비 길이 오차 (m)';
-
-      renderLengthBarChart(D10_COILS, 'FB-RPM 보정', tol, -260, 340, 100);
-    }
-
-    function renderLengthBarChart(coils, modelLabel, tol, yMin, yMax, yStep) {
-      document.getElementById('len-legend-row').innerHTML = `
-        <span class="inline-flex items-center gap-1.5 font-medium text-royal-700">
-          <span class="w-3 h-3 rounded-xs bg-blue-200 border border-blue-300 inline-block"></span>
-          <span>선택한 판정 범위 ±${tol}m</span>
-        </span>
-        <span class="inline-flex items-center gap-1.5"><span class="w-3 h-3 rounded-xs bg-slate-300 inline-block"></span>IBA 원본 오차</span>
-        <span class="inline-flex items-center gap-1.5 text-royal-600 font-medium"><span class="w-3 h-3 rounded-xs bg-royal-600 inline-block"></span>${modelLabel} (기준 이내)</span>
-        <span class="inline-flex items-center gap-1.5 text-red-600 font-medium"><span class="w-3 h-3 rounded-xs bg-red-600 inline-block"></span>${modelLabel} (기준 밖)</span>
-      `;
-
-      const corrColors = coils.map(c => Math.abs(c.corrErr) <= tol + 1e-9 ? '#2563EB' : '#DC2626');
-      const ctx = document.getElementById('lengthVerifyChart').getContext('2d');
-      if (lengthChart) lengthChart.destroy();
-
-      lengthChart = new Chart(ctx, {
-        type: 'bar',
-        plugins: [lengthBandPlugin],
-        data: {
-          labels: coils.map(c => c.lot.replace('P1', '').slice(0, 9)),
-          datasets: [
-            {
-              label: 'IBA 원본 오차',
-              data: coils.map(c => c.ibaErr),
-              backgroundColor: '#CBD5E1',
-              borderRadius: 4,
-              barPercentage: 0.85,
-              categoryPercentage: 0.72
-            },
-            {
-              label: `${modelLabel} 오차`,
-              data: coils.map(c => c.corrErr),
-              backgroundColor: corrColors,
-              borderRadius: 4,
-              barPercentage: 0.85,
-              categoryPercentage: 0.72
-            }
-          ]
-        },
-        options: {
-          responsive: true,
-          maintainAspectRatio: false,
-          plugins: {
-            legend: { display: false },
-            lengthBandPlugin: { tol },
-            tooltip: {
-              callbacks: {
-                title: items => `코일 LOT: ${coils[items[0].dataIndex].lot}`,
-                label: ctx => `${ctx.dataset.label}: ${ctx.parsed.y >= 0 ? '+' : ''}${ctx.parsed.y.toFixed(1)}m`
-              }
-            }
-          },
-          scales: {
-            x: {
-              grid: { display: false },
-              ticks: { color: '#6B7280', font: { size: 10 }, maxRotation: 40, minRotation: 0 }
-            },
-            y: {
-              min: yMin,
-              max: yMax,
-              grid: { color: ctx => ctx.tick.value === 0 ? '#94A3B8' : '#F3F4F6' },
-              ticks: {
-                stepSize: yStep,
-                color: '#6B7280',
-                font: { size: 11 },
-                callback: v => `${v > 0 ? '+' : ''}${v}m`
-              }
-            }
-          }
-        }
-      });
-    }
-
-    function buildUnitWeightChartOptions(maxLen) {
-      return {
-        responsive: true,
-        maintainAspectRatio: false,
-        interaction: { mode: 'nearest', axis: 'x', intersect: false },
-        plugins: {
-          legend: { display: false },
-          tooltip: {
-            filter: item => item.dataset.label === '예측값' || item.dataset.label === '실측값',
-            callbacks: {
-              title: items => `거리: ${Math.round(items[0].parsed.x).toLocaleString()}m`,
-              label: ctx => `${ctx.dataset.label}: ${ctx.parsed.y >= 0 ? '+' : ''}${ctx.parsed.y.toFixed(2)}%`
-            }
-          }
-        },
-        scales: {
-          x: {
-            type: 'linear',
-            min: 0,
-            max: Math.ceil(maxLen / 100) * 100,
-            grid: { display: false },
-            ticks: {
-              maxTicksLimit: 6,
-              color: '#6B7280',
-              font: { size: 11 },
-              callback: v => `${Math.round(v).toLocaleString()}m`
-            }
-          },
-          y: {
-            min: -3.0,
-            max: 5.0,
-            grid: { color: '#F3F4F6' },
-            ticks: {
-              stepSize: 1.0,
-              color: '#6B7280',
-              font: { size: 11 },
-              callback: v => v.toFixed(1)
-            }
-          }
-        }
-      };
-    }
-
-    // =========================================================================
-    // 5. VIEW 2: FILE UPLOAD, EXCEL/TXT PARSING & MODEL CALCULATION
-    // =========================================================================
-    document.getElementById('iba-file-input').addEventListener('change', async e => {
-      const file = e.target.files[0];
-      if (!file) return;
-      e.target.value = '';
-      await handlePrimaryUpload(file);
-    });
-
-    document.getElementById('actual-file-input').addEventListener('change', async e => {
-      const file = e.target.files[0];
-      if (!file) return;
-      e.target.value = '';
-      await handleActualOverlayUpload(file);
-    });
-
-    function extractRampMax(values) {
-      const clean = values.filter(v => typeof v === 'number' && !isNaN(v));
-      if (!clean.length) return NaN;
-      let bestPeak = NaN;
-      let bestSpan = -1;
-      let segMin = clean[0];
-      let segMax = clean[0];
-      for (let i = 1; i < clean.length; i++) {
-        if (clean[i] - clean[i - 1] < -100) {
-          if (segMax - segMin > bestSpan) {
-            bestSpan = segMax - segMin;
-            bestPeak = segMax;
-          }
-          segMin = clean[i];
-          segMax = clean[i];
-        } else {
-          if (clean[i] < segMin) segMin = clean[i];
-          if (clean[i] > segMax) segMax = clean[i];
-        }
-      }
-      if (segMax - segMin > bestSpan) bestPeak = segMax;
-      return bestPeak;
-    }
-
-    function computeMedian(arr) {
-      const s = arr.filter(v => typeof v === 'number' && !isNaN(v)).sort((a, b) => a - b);
-      if (!s.length) return NaN;
-      const mid = Math.floor(s.length / 2);
-      return s.length % 2 !== 0 ? s[mid] : (s[mid - 1] + s[mid]) / 2;
-    }
-
-    function findColIdx(headers, keywords) {
-      return headers.findIndex(h => {
-        const u = String(h || '').toUpperCase();
-        return keywords.every(k => u.includes(k.toUpperCase()));
-      });
-    }
-
-    /**
-     * 원본 인덱스 기준 COIL_LENGTH 증가구간(리셋 -100m 기준 분리)의
-     * 시작/끝 인덱스와 최대값을 반환합니다.
-     */
-    function extractRampBounds(rawLenArr) {
-      const valid = [];
-      for (let i = 0; i < rawLenArr.length; i++) {
-        if (typeof rawLenArr[i] === 'number' && !isNaN(rawLenArr[i])) {
-          valid.push({ idx: i, val: rawLenArr[i] });
-        }
-      }
-      if (valid.length < 5) return { startIdx: -1, endIdx: -1, rampMax: NaN };
-
-      let bestSpan = -1;
-      let best = { startIdx: -1, endIdx: -1, rampMax: NaN };
-      let segStart = 0;
-
-      for (let i = 1; i <= valid.length; i++) {
-        const isEnd = i === valid.length || (valid[i].val - valid[i - 1].val < -100);
-        if (isEnd) {
-          const seg = valid.slice(segStart, i);
-          if (seg.length >= 5) {
-            let minV = Infinity, maxV = -Infinity;
-            for (const p of seg) {
-              if (p.val < minV) minV = p.val;
-              if (p.val > maxV) maxV = p.val;
-            }
-            if (maxV - minV > bestSpan) {
-              bestSpan = maxV - minV;
-              best = { startIdx: seg[0].idx, endIdx: seg[seg.length - 1].idx, rampMax: maxV };
-            }
-          }
-          segStart = i;
-        }
-      }
-      return best;
-    }
-
-    /**
-     * 정상 압연 구간(startIdx ~ endIdx)에서 frac(0~1) 기준
-     * 정규화된 온도(temp_rel) 및 토크/전류(torque_rel) 시계열을 추출합니다.
-     */
-    function buildIbaRelProfile(rawLenArr, rawTempArr, rawTqArr, bounds) {
-      if (bounds.startIdx < 0 || isNaN(bounds.rampMax) || bounds.rampMax <= 100) {
-        return { tempPts: [], torquePts: [], hasTemp: false, hasTorque: false };
-      }
-
-      const tempRaw = [];
-      const tqRaw = [];
-      for (let i = bounds.startIdx; i <= bounds.endIdx; i++) {
-        const lv = rawLenArr[i];
-        if (typeof lv !== 'number' || isNaN(lv)) continue;
-        const frac = Math.min(1, Math.max(0, lv / bounds.rampMax));
-        const tv = rawTempArr[i];
-        if (typeof tv === 'number' && !isNaN(tv) && tv > 500) {
-          tempRaw.push({ frac, val: tv });
-        }
-        const qv = rawTqArr[i];
-        if (typeof qv === 'number' && !isNaN(qv)) {
-          tqRaw.push({ frac, val: qv });
-        }
-      }
-
-      let tempPts = [];
-      if (tempRaw.length >= 5) {
-        const tMed = computeMedian(tempRaw.map(p => p.val));
-        tempPts = tempRaw
-          .map(p => ({ frac: p.frac, val: Math.max(-3, Math.min(3, (p.val - tMed) / 50.0)) }))
-          .sort((a, b) => a.frac - b.frac);
-      }
-
-      let torquePts = [];
-      if (tqRaw.length >= 5) {
-        const qMed = computeMedian(tqRaw.map(p => p.val));
-        const denom = Math.abs(qMed) > 1e-3 ? Math.abs(qMed) : 1.0;
-        torquePts = tqRaw
-          .map(p => ({ frac: p.frac, val: Math.max(-3, Math.min(3, (p.val - qMed) / denom)) }))
-          .sort((a, b) => a.frac - b.frac);
-      }
-
-      return {
-        tempPts,
-        torquePts,
-        hasTemp: tempPts.length >= 5,
-        hasTorque: torquePts.length >= 5
-      };
-    }
-
-    function interpByFrac(pts, frac) {
-      if (!pts || !pts.length) return 0;
-      if (frac <= pts[0].frac) return pts[0].val;
-      if (frac >= pts[pts.length - 1].frac) return pts[pts.length - 1].val;
-      let lo = 0, hi = pts.length - 1;
-      while (lo + 1 < hi) {
-        const mid = (lo + hi) >> 1;
-        if (pts[mid].frac <= frac) lo = mid;
-        else hi = mid;
-      }
-      const span = pts[hi].frac - pts[lo].frac;
-      const t = span > 1e-9 ? (frac - pts[lo].frac) / span : 0;
-      return pts[lo].val + t * (pts[hi].val - pts[lo].val);
-    }
-
-    async function handlePrimaryUpload(file) {
-      try {
-        const ext = file.name.split('.').pop().toLowerCase();
-        let parsed;
-        if (ext === 'txt' || ext === 'csv') {
-          const text = await file.text();
-          parsed = parseIbaTextFile(text, file.name);
-        } else {
-          const buf = await file.arrayBuffer();
-          const wb = XLSX.read(buf, { type: 'array' });
-          parsed = parseExcelCoilFile(wb, file.name);
-        }
-        applyParsedCoil(parsed);
-        showToast(`"${file.name}" 분석을 완료했습니다.`, 'success');
-      } catch (err) {
-        console.error(err);
-        showToast('파일을 읽는 중 오류가 발생했습니다. 형식을 확인해 주세요.', 'error');
-      }
-    }
-
-    async function handleActualOverlayUpload(file) {
-      if (!currentCoil) {
-        showToast('먼저 IBA 또는 코일 파일을 업로드해 주세요.', 'error');
-        return;
-      }
-      try {
-        const buf = await file.arrayBuffer();
-        const wb = XLSX.read(buf, { type: 'array' });
-        const actualData = extractActualSheet(wb);
-        if (!actualData.points.length) {
-          showToast('단위중량실측 데이터(Distance, Kg/M %)를 찾지 못했습니다.', 'error');
-          return;
-        }
-        currentCoil.actualPoints = actualData.points;
-        isManualLengthInput = false;
-        if (!isNaN(actualData.actualWeight)) {
-          document.getElementById('inp-weight').value = actualData.actualWeight.toFixed(1);
-        }
-        recalculateAndRenderCurrentCoil(false, false);
-        showToast(`실측 데이터 ${actualData.points.length}점을 반영하고 총 길이를 실측치로 전환했습니다.`, 'success');
-      } catch (err) {
-        console.error(err);
-        showToast('실측 엑셀 파싱 중 오류가 발생했습니다.', 'error');
-      }
-    }
-
-    function extractActualSheet(wb) {
-      const sheets = wb.SheetNames;
-      const wtSheetName = sheets.find(s => s.includes('단위중량')) || sheets[1] || sheets[0];
-      const rows = XLSX.utils.sheet_to_json(wb.Sheets[wtSheetName], { defval: null });
-      const points = [];
-      let totalWeight = NaN;
-
-      for (const row of rows) {
-        let dist = NaN, pct = NaN, wt = NaN;
-        for (const [k, val] of Object.entries(row)) {
-          const num = parseFloat(val);
-          if (isNaN(num)) continue;
-          if (k.includes('Distance')) dist = num;
-          if (k.includes('Kg/M') && k.includes('%')) pct = num;
-          if (k.toLowerCase().includes('weight') && k.toLowerCase().includes('kg')) wt = num;
-        }
-        if (!isNaN(dist) && !isNaN(pct)) {
-          points.push({ x: dist, y: pct });
-        }
-        if (!isNaN(wt)) totalWeight = isNaN(totalWeight) ? wt : Math.max(totalWeight, wt);
-      }
-      points.sort((a, b) => a.x - b.x);
-      return { points, actualWeight: totalWeight };
-    }
-
-    function parseExcelCoilFile(wb, filename) {
-      const sheets = wb.SheetNames;
-      let lot = filename.replace(/\.(xlsx|xls)$/i, '');
-      let specText = filename.toUpperCase();
-      let speed = NaN;
-      let tailDev = NaN;
-      let weight = NaN;
-
-      // Sheet 1: 코일정보
-      const infoSheetName = sheets.find(s => s.includes('코일정보')) || sheets[0];
-      if (infoSheetName) {
-        const infoRows = XLSX.utils.sheet_to_json(wb.Sheets[infoSheetName], { header: 1 });
-        for (const r of infoRows) {
-          if (!r || r.length < 2) continue;
-          const k = String(r[0] ?? '').trim();
-          const v = String(r[1] ?? '').trim();
-          if (k.includes('코일 ID') || k.includes('LOT')) { if (v) lot = v; }
-          if (k.includes('선속')) { const n = parseFloat(v); if (!isNaN(n)) speed = n; }
-          if (k.includes('꼬리') && k.includes('%')) { const n = parseFloat(v); if (!isNaN(n)) tailDev = n; }
-          // 단위중량(g/m)을 코일 실중량(kg)으로 오인식하지 않도록 '단위' 제외 및 500kg 이상만 반영
-          if ((k.includes('실중량') || k.includes('총중량') || (k.includes('중량') && !k.includes('단위')))) {
-            const n = parseFloat(v);
-            if (!isNaN(n) && n >= 500) weight = n;
-          }
-          specText += ' ' + v.toUpperCase();
-        }
-      }
-
-      // Sheet 2: 단위중량실측
-      let actualPoints = [];
-      if (sheets.length >= 2) {
-        const act = extractActualSheet(wb);
-        actualPoints = act.points;
-        if (isNaN(weight) && !isNaN(act.actualWeight)) weight = act.actualWeight;
-      }
-
-      // Sheet 3: IBA
-      let ibaLen = NaN;
-      let fbRpm = NaN;
-      let line = 'L2';
-      let ibaProfile = null;
-      const ibaSheetName = sheets[2] || sheets.find(s => s.toUpperCase().includes('IBA'));
-      if (ibaSheetName) {
-        const raw = XLSX.utils.sheet_to_json(wb.Sheets[ibaSheetName], { header: 1, defval: null });
-        if (raw.length > 3) {
-          let headerIdx = 0, dataIdx = 1;
-          const c0r0 = String(raw[0]?.[0] ?? '').trim();
-          const c0r1 = String(raw[1]?.[0] ?? '').trim();
-          if (c0r0 === 'Time' && c0r1 === 'time') { headerIdx = 1; dataIdx = 3; }
-          else if (raw[1] && raw[1].some(v => typeof v === 'string' && v.includes('['))) { headerIdx = 0; dataIdx = 2; }
-
-          const rawHeaders = raw[headerIdx].map(h => String(h ?? '').trim());
-          line = rawHeaders.some(h => h.includes('L1.')) ? 'L1' : 'L2';
-          const norm = rawHeaders.map(h => h.replace(/L1\./g, '.').replace(/L2\./g, '.'));
-
-          const lenIdx = findColIdx(norm, ['COIL_LENGTH']);
-          const tempIdx = findColIdx(norm, ['BAR_TEMP']);
-          const fbIdx = findColIdx(norm, ['FINISHING BLOCK Reference Speed']);
-          let tqIdx = findColIdx(norm, ['FINISHING', 'TORQUE']);
-          if (tqIdx < 0) tqIdx = findColIdx(norm, ['TORQUE']);
-          if (tqIdx < 0) tqIdx = findColIdx(norm, ['CURRENT']);
-
-          const rawLenArr = [];
-          const rawTempArr = [];
-          const rawTqArr = [];
-          const fbActive = [];
-          for (let i = dataIdx; i < raw.length; i++) {
-            const row = raw[i];
-            if (!row) continue;
-            const lv = lenIdx >= 0 ? parseFloat(row[lenIdx]) : NaN;
-            const tv = tempIdx >= 0 ? parseFloat(row[tempIdx]) : NaN;
-            const qv = tqIdx >= 0 ? parseFloat(row[tqIdx]) : NaN;
-            rawLenArr.push(lv);
-            rawTempArr.push(tv);
-            rawTqArr.push(qv);
-            if (tempIdx >= 0 && fbIdx >= 0) {
-              const fv = parseFloat(row[fbIdx]);
-              if (!isNaN(tv) && tv > 500 && !isNaN(fv)) fbActive.push(fv);
-            }
-          }
-          const bounds = extractRampBounds(rawLenArr);
-          ibaLen = bounds.rampMax;
-          fbRpm = computeMedian(fbActive);
-          ibaProfile = buildIbaRelProfile(rawLenArr, rawTempArr, rawTqArr, bounds);
-        }
-      }
-
-      // SD500N D12 등 강종에 'SD500'이 포함되어도 사이즈(D12/D10)를 최우선 판별
-      const spec = specText.includes('D12')
-        ? '500N D12'
-        : (specText.includes('D10') ? 'SD500 D10' : '500N D12');
-      return { filename, lot, spec, line, ibaLen, fbRpm, speed, tailDev, weight, actualPoints, ibaProfile };
-    }
-
-    function parseIbaTextFile(text, filename) {
-      const lines = text.split(/\r?\n/).filter(l => l.trim().length > 0);
-      const sep = lines[0].includes('\t') ? '\t' : ',';
-      let headerIdx = 0;
-      for (let i = 0; i < Math.min(5, lines.length); i++) {
-        if (lines[i].includes('COIL_LENGTH') || lines[i].toLowerCase().includes('time')) {
-          headerIdx = i;
-          break;
-        }
-      }
-      const rawHeaders = lines[headerIdx].split(sep).map(h => h.trim());
-      const line = rawHeaders.some(h => h.includes('L1.')) ? 'L1' : 'L2';
-      const norm = rawHeaders.map(h => h.replace(/L1\./g, '.').replace(/L2\./g, '.'));
-
-      const lenIdx = findColIdx(norm, ['COIL_LENGTH']);
-      const tempIdx = findColIdx(norm, ['BAR_TEMP']);
-      const fbIdx = findColIdx(norm, ['FINISHING BLOCK Reference Speed']);
-      let tqIdx = findColIdx(norm, ['FINISHING', 'TORQUE']);
-      if (tqIdx < 0) tqIdx = findColIdx(norm, ['TORQUE']);
-      if (tqIdx < 0) tqIdx = findColIdx(norm, ['CURRENT']);
-
-      const rawLenArr = [];
-      const rawTempArr = [];
-      const rawTqArr = [];
-      const fbActive = [];
-      for (let i = headerIdx + 1; i < lines.length; i++) {
-        const cols = lines[i].split(sep);
-        const lv = lenIdx >= 0 ? parseFloat(cols[lenIdx]) : NaN;
-        const tv = tempIdx >= 0 ? parseFloat(cols[tempIdx]) : NaN;
-        const qv = tqIdx >= 0 ? parseFloat(cols[tqIdx]) : NaN;
-        rawLenArr.push(lv);
-        rawTempArr.push(tv);
-        rawTqArr.push(qv);
-        if (tempIdx >= 0 && fbIdx >= 0) {
-          const fv = parseFloat(cols[fbIdx]);
-          if (!isNaN(tv) && tv > 500 && !isNaN(fv)) fbActive.push(fv);
-        }
-      }
-
-      const bounds = extractRampBounds(rawLenArr);
-      const ibaProfile = buildIbaRelProfile(rawLenArr, rawTempArr, rawTqArr, bounds);
-
-      const specText = filename.toUpperCase();
-      const spec = specText.includes('D12')
-        ? '500N D12'
-        : (specText.includes('D10') ? 'SD500 D10' : '500N D12');
-      return {
-        filename,
-        lot: filename.replace(/\.(txt|csv)$/i, ''),
-        spec,
-        line,
-        ibaLen: bounds.rampMax,
-        fbRpm: computeMedian(fbActive),
-        speed: NaN,
-        tailDev: NaN,
-        weight: NaN,
-        actualPoints: [],
-        ibaProfile
-      };
-    }
-
-    function computeCorrectedLength(spec, ibaLen, fbRpm) {
-      if (isNaN(ibaLen)) return { predLen: NaN, modelTag: '-', formulaText: '-' };
-      if (spec === 'SD500 D10' && !isNaN(fbRpm)) {
-        const ratio = D10_INTERCEPT + D10_SLOPE * fbRpm;
-        return {
-          predLen: ibaLen * ratio,
-          modelTag: 'FB-RPM',
-          formulaText: `SD500 D10 (FB-RPM): ${ibaLen.toFixed(1)} × (3.985620 - 0.003243 × ${fbRpm.toFixed(2)})`
-        };
-      }
-      return {
-        predLen: ibaLen + D12_OGD_SHIFT,
-        modelTag: 'OGD',
-        formulaText: `500N D12 (OGD): ${ibaLen.toFixed(1)} + ${D12_OGD_SHIFT.toFixed(4)}m`
-      };
-    }
-
-    /**
-     * 코랩에서 학습된 10개 피처 Ridge(alpha=1.0) 모델 계수를 그대로 적용해
-     * 거리별 단위중량 편차(%) 예측 곡선을 계산합니다.
-     */
-    function generatePredictionCurve(totalLen, spec, tailDevInput, ibaProfile) {
-      const model = PROFILE_MODEL_COEFFS[spec] || PROFILE_MODEL_COEFFS['ALL_COMBINED'];
-      const c = model.coef;
-      const tailDev = !isNaN(tailDevInput) ? tailDevInput : 0.0;
-      const steps = 41;
-      const pts = [];
-
-      for (let i = 0; i < steps; i++) {
-        const frac = i / (steps - 1);
-        const dist = frac * totalLen;
-        const tempRel = (ibaProfile && ibaProfile.hasTemp) ? interpByFrac(ibaProfile.tempPts, frac) : 0.0;
-        const torqueRel = (ibaProfile && ibaProfile.hasTorque) ? interpByFrac(ibaProfile.torquePts, frac) : 0.0;
-
-        const feats = [
-          Math.exp(-10.0 * frac),          // tail_exp_fast
-          Math.exp(-3.0 * frac),           // tail_exp_slow
-          frac,                            // frac
-          frac * frac,                     // frac_sq
-          frac * frac * frac,              // frac_cu
-          Math.exp(-10.0 * (1.0 - frac)),  // head_exp
-          tailDev,                         // tail_dev
-          tailDev * Math.exp(-5.0 * frac), // tail_dev_decay
-          tempRel,                         // temp_rel
-          torqueRel                        // torque_rel
-        ];
-
-        let pred = model.intercept;
-        for (let k = 0; k < feats.length; k++) {
-          pred += c[k] * feats[k];
-        }
-        pts.push({ x: dist, y: Number(pred.toFixed(3)) });
-      }
-      return pts;
-    }
-
-    function applyParsedCoil(parsed) {
-      // Preserve pre-entered manual length only if user typed it before uploading the first coil
-      const keepPreTypedManual = !currentCoil && isManualLengthInput && document.getElementById('inp-length').value.trim() !== '';
-      if (!keepPreTypedManual) {
-        isManualLengthInput = false;
-      }
-
-      currentCoil = parsed;
-      document.getElementById('upload-status-text').textContent = `업로드됨: ${parsed.filename}`;
-      document.getElementById('inp-lot').value = parsed.lot || '';
-      document.getElementById('inp-spec').value = parsed.spec;
-      if (!isNaN(parsed.tailDev)) document.getElementById('inp-tail-dev').value = parsed.tailDev.toFixed(2);
-      if (!isNaN(parsed.speed)) document.getElementById('inp-speed').value = parsed.speed.toFixed(1);
-
-      recalculateAndRenderCurrentCoil(true, true);
-    }
-
-    function onSpecChange() {
-      if (!currentCoil) return;
-      currentCoil.spec = document.getElementById('inp-spec').value;
-      recalculateAndRenderCurrentCoil(false, false);
-    }
-
-    function onWorkerInputChange() {
-      if (!currentCoil) return;
-      recalculateAndRenderCurrentCoil(false, false);
-    }
-
-    function onManualLengthInput() {
-      const raw = document.getElementById('inp-length').value.trim();
-      const len = parseFloat(raw);
-      if (raw !== '' && !isNaN(len)) {
-        isManualLengthInput = true;
-        updateLengthSourceBadge('manual');
-        const spec = document.getElementById('inp-spec').value;
-        const nom = NOMINAL_WEIGHT_PER_M[spec] || 0.888;
-        document.getElementById('inp-weight').value = (len * nom).toFixed(1);
-        if (currentCoil) recalculateAndRenderCurrentCoil(false, false);
-      } else {
-        isManualLengthInput = false;
-        if (!currentCoil) updateLengthSourceBadge('none');
-      }
-    }
-
-    function onLengthInputBlur() {
-      const raw = document.getElementById('inp-length').value.trim();
-      // If user left Total Length empty while a coil is loaded, automatically fill with predicted length and show popup
-      if (raw === '' && currentCoil) {
-        isManualLengthInput = false;
-        recalculateAndRenderCurrentCoil(false, true);
-      }
-    }
-
-    function recalculateAndRenderCurrentCoil(logToHistory, showPopupIfPredicted = false) {
-      if (!currentCoil) return;
-      const spec = document.getElementById('inp-spec').value;
-      const tailInput = parseFloat(document.getElementById('inp-tail-dev').value);
-      const calc = computeCorrectedLength(spec, currentCoil.ibaLen, currentCoil.fbRpm);
-      const predLen = !isNaN(calc.predLen) ? calc.predLen : NaN;
-      currentCoil.predLen = predLen;
-      currentCoil.modelTag = calc.modelTag;
-
-      // Determine whether actual length exists (from uploaded actual sheet or manual user entry)
-      const actualLenFromSheet = (currentCoil.actualPoints && currentCoil.actualPoints.length > 0)
-        ? currentCoil.actualPoints[currentCoil.actualPoints.length - 1].x
-        : NaN;
-      const manualVal = parseFloat(document.getElementById('inp-length').value);
-
-      let finalLen;
-      let usedPredictionFallback = false;
-
-      if (!isNaN(actualLenFromSheet)) {
-        finalLen = actualLenFromSheet;
-        document.getElementById('inp-length').value = finalLen.toFixed(2);
-        updateLengthSourceBadge('actual');
-      } else if (isManualLengthInput && !isNaN(manualVal)) {
-        finalLen = manualVal;
-        updateLengthSourceBadge('manual');
-      } else {
-        finalLen = !isNaN(predLen) ? predLen : 4733.0;
-        document.getElementById('inp-length').value = finalLen.toFixed(2);
-        updateLengthSourceBadge('predicted');
-        usedPredictionFallback = true;
-      }
-
-      // Generate prediction curve using trained Ridge(alpha=1.0) profile model
-      const effectiveTailDev = !isNaN(tailInput)
-        ? tailInput
-        : (currentCoil.actualPoints && currentCoil.actualPoints.length > 0 ? currentCoil.actualPoints[0].y : 0.0);
-      const predCurve = generatePredictionCurve(finalLen, spec, effectiveTailDev, currentCoil.ibaProfile);
-      currentCoil.predCurve = predCurve;
-
-      const avgDev = predCurve.reduce((s, p) => s + p.y, 0) / predCurve.length;
-      const minDev = Math.min(...predCurve.map(p => p.y));
-
-      // Auto-fill weight if not explicitly present
-      const nom = NOMINAL_WEIGHT_PER_M[spec] || 0.888;
-      const calcWeight = !isNaN(currentCoil.weight) ? currentCoil.weight : finalLen * nom * (1 + avgDev / 100);
-      document.getElementById('inp-weight').value = calcWeight.toFixed(1);
-
-      // Update Result Strip (always show model predicted length vs IBA)
-      const displayPredLen = !isNaN(predLen) ? predLen : finalLen;
-      document.getElementById('res-model-tag').textContent = calc.modelTag;
-      document.getElementById('res-pred-len').textContent = `${displayPredLen.toLocaleString(undefined, { minimumFractionDigits: 1, maximumFractionDigits: 1 })}m`;
-      document.getElementById('res-iba-len').textContent = isNaN(currentCoil.ibaLen) ? '-' : `${currentCoil.ibaLen.toLocaleString(undefined, { minimumFractionDigits: 1, maximumFractionDigits: 1 })}m`;
-      document.getElementById('res-pred-min').textContent = `${minDev >= 0 ? '+' : ''}${minDev.toFixed(2)}%`;
-      document.getElementById('res-spec-line').textContent = `${spec} · ${currentCoil.line}`;
-
-      // Update Details Card
-      const profModel = PROFILE_MODEL_COEFFS[spec] || PROFILE_MODEL_COEFFS['ALL_COMBINED'];
-      const tempState = currentCoil.ibaProfile?.hasTemp ? '반영됨' : '미검출(0)';
-      const tqState = currentCoil.ibaProfile?.hasTorque ? '반영됨' : '미검출(0)';
-      document.getElementById('detail-formula').textContent =
-        `${calc.formulaText} · 거리별 곡선: ${profModel.modelType} (${profModel.cv.nCoils}코일 학습)`;
-      document.getElementById('detail-vars').textContent =
-        `FB_RPM: ${isNaN(currentCoil.fbRpm) ? '미검출' : currentCoil.fbRpm.toFixed(2) + ' rpm'} · IBA 온도(${tempState}) · 토크(${tqState})`;
-
-      if (logToHistory) {
-        sessionHistory.unshift({
-          time: new Date().toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' }),
-          lot: currentCoil.lot,
-          spec,
-          predLen: displayPredLen.toFixed(1),
-          minDev: minDev.toFixed(2)
-        });
-        renderSessionHistory();
-      }
-
-      // Show loaded state
-      document.getElementById('predict-empty-state').classList.add('hidden');
-      document.getElementById('predict-loaded-state').classList.remove('hidden');
-      document.getElementById('pred-tol-badge').classList.remove('hidden');
-
-      renderPredictChart();
-
-      // Open reliability modal if no actual length existed and prediction was auto-filled
-      if (usedPredictionFallback && showPopupIfPredicted) {
-        openPredFallbackModal(spec, finalLen);
-      }
-    }
-
-    function interpolatePredAt(curve, x) {
-      if (!curve || !curve.length) return 0;
-      if (x <= curve[0].x) return curve[0].y;
-      if (x >= curve[curve.length - 1].x) return curve[curve.length - 1].y;
-      for (let i = 0; i < curve.length - 1; i++) {
-        if (x >= curve[i].x && x <= curve[i + 1].x) {
-          const t = (x - curve[i].x) / (curve[i + 1].x - curve[i].x || 1);
-          return curve[i].y + t * (curve[i + 1].y - curve[i].y);
-        }
-      }
-      return 0;
-    }
-
-    function renderPredictChart() {
-      if (!currentCoil || !currentCoil.predCurve) return;
-      const tol = homeActiveTol;
-      const curve = currentCoil.predCurve;
-      const maxLen = curve[curve.length - 1].x;
-
-      document.getElementById('pred-tol-badge').textContent = `판정 범위 ±${tol.toFixed(1)}%p`;
-      document.getElementById('pred-legend-band').textContent = `판정 범위 ±${tol.toFixed(1)}%p`;
-
-      const upperBand = curve.map(p => ({ x: p.x, y: p.y + tol }));
-      const lowerBand = curve.map(p => ({ x: p.x, y: p.y - tol }));
-
-      const datasets = [
-        {
-          label: '판정 상한',
-          data: upperBand,
-          borderColor: 'transparent',
-          backgroundColor: 'transparent',
-          pointRadius: 0,
-          fill: false,
-          tension: 0.25
-        },
-        {
-          label: `판정 범위 (±${tol.toFixed(1)}%p)`,
-          data: lowerBand,
-          borderColor: 'transparent',
-          backgroundColor: 'rgba(59, 130, 246, 0.16)',
-          pointRadius: 0,
-          fill: '-1',
-          tension: 0.25
-        },
-        {
-          label: '예측값',
-          data: curve,
-          borderColor: '#2563EB',
-          borderWidth: 2,
-          pointRadius: 0,
-          fill: false,
-          tension: 0.25
-        }
-      ];
-
-      // Overlay actual points if available
-      const actPts = currentCoil.actualPoints || [];
-      const lenCompareBox = document.getElementById('actual-length-compare');
-      if (actPts.length > 0) {
-        let hits = 0, sumAbs = 0;
-        const colors = actPts.map(pt => {
-          const predY = interpolatePredAt(curve, pt.x);
-          const diff = Math.abs(pt.y - predY);
-          sumAbs += diff;
-          if (diff <= tol) { hits++; return '#2563EB'; }
-          return '#DC2626';
-        });
-        const pct = (hits / actPts.length) * 100;
-        const mae = sumAbs / actPts.length;
-        const actMaxLen = actPts[actPts.length - 1].x;
-
-        // 실제 모델 예측 길이(currentCoil.predLen)와 실측 길이(actMaxLen) 비교
-        const modelPredLen = !isNaN(currentCoil.predLen) ? currentCoil.predLen : maxLen;
-        const lenDiff = modelPredLen - actMaxLen;
-        const lenAcc = actMaxLen > 0 ? Math.max(0, (1 - Math.abs(lenDiff) / actMaxLen) * 100) : 0;
-        const spec = document.getElementById('inp-spec').value;
-        const lenTol = spec === 'SD500 D10' ? lenD10ActiveTol : lenD12ActiveTol;
-        const lenPass = Math.abs(lenDiff) <= lenTol + 1e-9;
-
-        document.getElementById('actual-compare-status').textContent =
-          `실측 ${actPts.length}점 · ±${tol.toFixed(1)}%p 일치율 ${pct.toFixed(1)}% (평균 ${mae.toFixed(2)}%p)`;
-
-        if (lenCompareBox) {
-          lenCompareBox.classList.remove('hidden');
-          document.getElementById('act-len-accuracy').textContent = `${lenAcc.toFixed(2)}%`;
-          document.getElementById('act-len-pred').textContent = `${modelPredLen.toLocaleString(undefined, { minimumFractionDigits: 1, maximumFractionDigits: 1 })}m`;
-          document.getElementById('act-len-actual').textContent = `${actMaxLen.toLocaleString(undefined, { minimumFractionDigits: 1, maximumFractionDigits: 1 })}m`;
-          const diffEl = document.getElementById('act-len-diff');
-          diffEl.textContent = `${lenDiff >= 0 ? '+' : ''}${lenDiff.toFixed(1)}m`;
-          diffEl.className = `mt-0.5 text-sm font-extrabold tabular-nums ${lenPass ? 'text-emerald-700' : 'text-red-600'}`;
-
-          const badgeEl = document.getElementById('act-len-badge');
-          if (lenPass) {
-            badgeEl.className = 'text-[11px] font-bold px-2.5 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200';
-            badgeEl.textContent = `±${lenTol}m 이내 적중 (${currentCoil.modelTag || '예측'})`;
-          } else {
-            badgeEl.className = 'text-[11px] font-bold px-2.5 py-0.5 rounded-full bg-red-50 text-red-700 border border-red-200';
-            badgeEl.textContent = `±${lenTol}m 기준 초과 (${currentCoil.modelTag || '예측'})`;
-          }
-
-          // IBA 원본 vs 보정 모델 우위 비교 렌더링
-          const ibaCompareWrap = document.getElementById('act-iba-compare-wrap');
-          const ibaLen = currentCoil.ibaLen;
-          if (ibaCompareWrap && !isNaN(ibaLen) && actMaxLen > 0) {
-            ibaCompareWrap.classList.remove('hidden');
-            const ibaDiff = ibaLen - actMaxLen;
-            const ibaAcc = Math.max(0, (1 - Math.abs(ibaDiff) / actMaxLen) * 100);
-            const absIba = Math.abs(ibaDiff);
-            const absMod = Math.abs(lenDiff);
-            const gain = absIba - absMod; // 양수면 보정 모델이 더 우수
-            const mTag = currentCoil.modelTag || '보정';
-
-            document.getElementById('cmp-model-title').textContent = `보정 모델 (${mTag})`;
-            document.getElementById('cmp-iba-len').textContent = `${ibaLen.toLocaleString(undefined, { minimumFractionDigits: 1, maximumFractionDigits: 1 })}m`;
-            document.getElementById('cmp-iba-err').textContent = `${ibaDiff >= 0 ? '+' : ''}${ibaDiff.toFixed(1)}m`;
-            document.getElementById('cmp-iba-acc').textContent = `정확도 ${ibaAcc.toFixed(2)}%`;
-
-            document.getElementById('cmp-model-len').textContent = `${modelPredLen.toLocaleString(undefined, { minimumFractionDigits: 1, maximumFractionDigits: 1 })}m`;
-            document.getElementById('cmp-model-err').textContent = `${lenDiff >= 0 ? '+' : ''}${lenDiff.toFixed(1)}m`;
-            document.getElementById('cmp-model-acc').textContent = `정확도 ${lenAcc.toFixed(2)}%`;
-
-            const verdictBox = document.getElementById('act-iba-verdict');
-            const verdictText = document.getElementById('act-iba-verdict-text');
-            const verdictDelta = document.getElementById('act-iba-verdict-delta');
-            const cardIba = document.getElementById('cmp-card-iba');
-            const cardMod = document.getElementById('cmp-card-model');
-            const winIba = document.getElementById('cmp-win-iba');
-            const winMod = document.getElementById('cmp-win-model');
-
-            if (gain > 0.05) {
-              const impPct = absIba > 0 ? (gain / absIba) * 100 : 0;
-              verdictBox.className = 'flex flex-wrap items-center justify-between gap-2 rounded-lg px-3 py-2 text-xs font-bold bg-emerald-50 text-emerald-800 border border-emerald-200';
-              verdictText.textContent = `✓ 보정 모델(${mTag})이 IBA 원본보다 더 정확합니다`;
-              verdictDelta.textContent = `오차 ${gain.toFixed(1)}m 절감 (-${impPct.toFixed(1)}%)`;
-              cardMod.className = 'rounded-lg bg-emerald-50/40 border-2 border-emerald-400 p-3 transition-colors';
-              cardIba.className = 'rounded-lg bg-white border border-gray-200 p-3 transition-colors';
-              winMod.classList.remove('hidden');
-              winIba.classList.add('hidden');
-            } else if (gain < -0.05) {
-              verdictBox.className = 'flex flex-wrap items-center justify-between gap-2 rounded-lg px-3 py-2 text-xs font-bold bg-amber-50 text-amber-900 border border-amber-200';
-              verdictText.textContent = `이 코일은 IBA 원본이 보정 모델(${mTag})보다 더 가깝습니다`;
-              verdictDelta.textContent = `IBA가 ${Math.abs(gain).toFixed(1)}m 더 근접`;
-              cardIba.className = 'rounded-lg bg-amber-50/40 border-2 border-amber-400 p-3 transition-colors';
-              cardMod.className = 'rounded-lg bg-white border border-gray-200 p-3 transition-colors';
-              winIba.classList.remove('hidden');
-              winMod.classList.add('hidden');
-            } else {
-              verdictBox.className = 'flex flex-wrap items-center justify-between gap-2 rounded-lg px-3 py-2 text-xs font-bold bg-gray-100 text-gray-700 border border-gray-200';
-              verdictText.textContent = `IBA 원본과 보정 모델(${mTag})의 오차가 동일합니다`;
-              verdictDelta.textContent = '차이 0.0m';
-              cardIba.className = 'rounded-lg bg-white border border-gray-200 p-3 transition-colors';
-              cardMod.className = 'rounded-lg bg-white border border-gray-200 p-3 transition-colors';
-              winIba.classList.add('hidden');
-              winMod.classList.add('hidden');
-            }
-          } else if (ibaCompareWrap) {
-            ibaCompareWrap.classList.add('hidden');
-          }
-        }
-
-        datasets.push({
-          label: '실측값',
-          data: actPts,
-          borderColor: '#374151',
-          borderWidth: 1.5,
-          pointBackgroundColor: colors,
-          pointBorderColor: '#FFFFFF',
-          pointBorderWidth: 1.5,
-          pointRadius: 4.5,
-          pointHoverRadius: 6.5,
-          fill: false,
-          tension: 0.1
-        });
-      } else {
-        document.getElementById('actual-compare-status').textContent =
-          '실측 0점 · 실측 데이터가 없습니다';
-        if (lenCompareBox) lenCompareBox.classList.add('hidden');
-      }
-
-      const ctx = document.getElementById('predictMainChart').getContext('2d');
-      if (predictChart) predictChart.destroy();
-      predictChart = new Chart(ctx, {
-        type: 'line',
-        data: { datasets },
-        options: buildUnitWeightChartOptions(maxLen)
-      });
-    }
-
-    function renderSessionHistory() {
-      const listEl = document.getElementById('session-history-list');
-      if (!sessionHistory.length) {
-        listEl.textContent = '아직 검증 기록이 없습니다.';
-        return;
-      }
-      listEl.innerHTML = sessionHistory.slice(0, 8).map(item => `
-        <div class="flex items-center justify-between py-1.5 px-3 rounded-lg bg-gray-50 border border-gray-100">
-          <span class="font-bold text-gray-800">${item.lot} <span class="font-normal text-gray-500">(${item.spec})</span></span>
-          <span class="font-mono text-gray-700">예측 ${item.predLen}m · 최저 ${item.minDev}% <span class="text-gray-400 ml-1">${item.time}</span></span>
-        </div>
-      `).join('');
-    }
-
-    function loadSampleCoilIntoPredict(type = 'D12') {
-      if (type === 'D10') {
-        const sampleD10 = {
-          filename: 'sd500_D10_코일번호_20241003.xlsx (예시)',
-          lot: 'P133539A-07A',
-          spec: 'SD500 D10',
-          line: 'L1',
-          ibaLen: 6349.00,
-          fbRpm: 913.38,
-          speed: 58.0,
-          tailDev: 1.60,
-          weight: 4012.0,
-          actualPoints: [],
-          ibaProfile: null
-        };
-        applyParsedCoil(sampleD10);
-        showToast('SD500 D10 예시 코일(P133539A-07A)을 불러왔습니다.', 'success');
-        return;
-      }
-
-      const ex = D12_EXAMPLE_COIL;
-      const sampleD12 = {
-        filename: '500N_D12_코일번호_2026060403.xlsx (예시)',
-        lot: 'P147453A-6A',
-        spec: '500N D12',
-        line: 'L1',
-        ibaLen: 4740.00,
-        fbRpm: 1007.70,
-        speed: 42.5,
-        tailDev: 1.85,
-        weight: 4202.5,
-        actualPoints: ex.distances.map((d, i) => ({ x: i === ex.distances.length - 1 ? 4733.33 : d, y: ex.actual[i] })),
-        ibaProfile: null
-      };
-      applyParsedCoil(sampleD12);
-      showToast('500N D12 예시 코일(P147453A-6A)을 불러왔습니다.', 'success');
-    }
-
-    function resetPredictView() {
-      currentCoil = null;
-      isManualLengthInput = false;
-      updateLengthSourceBadge('none');
-      document.getElementById('upload-status-text').textContent = '아직 업로드한 파일이 없습니다.';
-      document.getElementById('inp-tail-dev').value = '';
-      document.getElementById('inp-lot').value = '';
-      document.getElementById('inp-spec').value = '500N D12';
-      document.getElementById('inp-length').value = '';
-      document.getElementById('inp-weight').value = '';
-      document.getElementById('inp-speed').value = '';
-      document.getElementById('predict-empty-state').classList.remove('hidden');
-      document.getElementById('predict-loaded-state').classList.add('hidden');
-      document.getElementById('pred-tol-badge').classList.add('hidden');
-      document.getElementById('actual-compare-status').textContent = '실측 0점 · 실측 데이터가 없습니다';
-      const lenCompareBox = document.getElementById('actual-length-compare');
-      if (lenCompareBox) lenCompareBox.classList.add('hidden');
-      if (predictChart) { predictChart.destroy(); predictChart = null; }
-      showToast('입력 내용을 초기화했습니다.', 'info');
-    }
-
-    // =========================================================================
-    // 6. INITIALIZATION
-    // =========================================================================
-    window.addEventListener('DOMContentLoaded', () => {
-      updateHomeView();
-    });
-  </script>
-</body>
-</html>
+# =============================================================================
+# 4. 메인 실행부
+# =============================================================================
+def main():
+    xlsx_files = sorted(glob.glob(os.path.join(DATA_DIR, "*.xlsx")))
+    if not xlsx_files:
+        print(f"[오류] '{DATA_DIR}' 경로에서 .xlsx 파일을 찾지 못했습니다.")
+        print("코랩 왼쪽 폴더에 코일 엑셀 파일들을 업로드한 뒤 다시 실행해 주세요.")
+        return
+
+    print(f"총 {len(xlsx_files)}개의 엑셀 파일을 탐색했습니다. 파싱 중...\n")
+    parsed_coils = []
+    for path in xlsx_files:
+        try:
+            res = parse_single_coil_excel(path)
+            if res is not None:
+                parsed_coils.append(res)
+                print(
+                    f"  ✓ {res['filename']} | {res['spec']} | LOT={res['lot']} | "
+                    f"실측 {res['n_points']}점 | 평균편차={res['mean_dev']:+.2f}% | IBA={'O' if res['has_iba'] else 'X'}"
+                )
+            else:
+                print(f"  - 건너뜀 (단위중량실측 시트 없음): {os.path.basename(path)}")
+        except Exception as exc:
+            print(f"  ! 파싱 실패 ({os.path.basename(path)}): {exc}")
+
+    if len(parsed_coils) < 2:
+        print("\n[오류] 학습 가능한 코일이 2개 미만입니다. 단위중량실측 시트가 포함된 엑셀을 올려주세요.")
+        return
+
+    result_payload = {}
+    for spec_key in ["500N D12", "SD500 D10"]:
+        sub = [c for c in parsed_coils if c["spec"] == spec_key]
+        if len(sub) >= 2:
+            fitted = evaluate_and_fit_spec(sub, spec_key)
+            if fitted:
+                result_payload[spec_key] = fitted
+
+    all_fitted = evaluate_and_fit_spec(parsed_coils, "ALL_COMBINED")
+    if all_fitted:
+        result_payload["ALL_COMBINED"] = all_fitted
+
+    with open(OUTPUT_JSON, "w", encoding="utf-8") as f:
+        json.dump(result_payload, f, ensure_ascii=False, indent=2)
+
+    print("\n" + "=" * 65)
+    print(f"=== 완료! 생성된 '{OUTPUT_JSON}' 파일을 홈페이지에서 바로 불러오세요 ===")
+    print("=" * 65)
+    print(json.dumps(result_payload, ensure_ascii=False, indent=2))
+    print("=" * 65)
+
+
+if __name__ == "__main__":
+    main()
